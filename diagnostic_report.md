@@ -142,6 +142,7 @@ python -m chiller_sim --seed 42 --output data/chiller_telemetry.csv
 python -m chiller_sim.report
 python -m chiller_sim.separation
 python -m chiller_sim.sweeps
+python -m chiller_sim.detector
 python -m pytest -q
 ```
 
@@ -418,3 +419,189 @@ sensor would restore separation. This is a sensitivity condition, not a
 claim under the finite-sample rule.
 
 Blanketing-only NCG remains inseparable by construction.
+
+## Fourth analysis: apparent-subcooling trend-and-threshold detector
+
+### Stated before implementation
+
+**Detector**
+
+```text
+DETECTOR_INPUTS = ("timestamp", "discharge_pressure_kpa",
+                   "cond_liquid_temp_c", "cooling_load_kw")
+COMMISSIONING_HOURS = 48; WINDOW_HOURS = 24; EVAL_EVERY_HOURS = 1
+THRESHOLD_Z = 4.0
+CALIBRATION_SEEDS = tuple(range(20)); HOLDOUT_SEEDS = tuple(range(20, 40))
+```
+
+Apparent subcooling is
+`saturation_temperature_c(discharge_pressure_kpa) − cond_liquid_temp_c`;
+`plr = cooling_load_kw / config.rated_capacity_kw`. It must match
+`derive_signals` on the same data.
+
+- `fit_baseline(frame) -> (a, b)` fits OLS of apparent subcooling on `[1, plr]`
+  over the first 48 hours.
+- `detector_statistic(frame, baseline) -> pd.Series` computes residuals from
+  that baseline and returns the trailing 24-hour residual mean at every whole
+  hour `t` from 72 hours to the last sample, inclusive. Each window is
+  `(t − 24 h, t]` and never overlaps commissioning.
+- The alarm is `S > θ`. The detector runs on a frame containing only
+  `DETECTOR_INPUTS`.
+
+**Time-series cases (5-min, 7 days, `generate_telemetry`)**
+
+- `healthy`: `SimulationConfig(seed=s, fault_start="2025-07-08 00:00:00")`.
+- `condenser_fouling`.
+- `ncg_blanketing_only`: `fault_type="non_condensables"`,
+  `ncg_max_partial_pressure_kpa=0.0`, `ncg_blanketing_ua_loss=0.5`. This is
+  fouling by construction.
+- The four nonzero-p cases from `separation.FAULT_CASES`: `ncg_dalton`,
+  `ncg_blanketed`, `ncg_dalton_ua_matched`, and
+  `ncg_blanketed_ua_matched`. These time series use n=0 (the PR 2 model).
+- Each case runs for seeds 0–39, and each run fits its own baseline.
+
+**Sweep windows (steady operating points, reusing PR 3's solver, calibration,
+and case definitions)**
+
+- Cases: healthy, fouling, blanketing-only, `ncg_dalton`, and `ncg_blanketed`.
+- Grid: PR 3's `LOAD_POINTS_KW` at 28 °C and `CW_POINTS_C` at 650 kW. For NCG
+  cases, use every n in `NCG_EXPONENTS`, with PR 3's calibrated p_ncg and
+  reference pressures.
+- For each (case, sweep, n, point, seed), draw ONE steady 24-hour window
+  (288 samples). Use the model's noise: discharge-pressure noise, and
+  `cond_liquid_temp = T_cond − subcool + temp noise`, where subcool is
+  `cond_subcooling_c + subcooling_plr_gain_c*(plr−0.65) +
+  _ar1(normal, subcooling_ar_phi, subcooling_ar_sd_c)` along the window,
+  clipped at ≥ 0.2. Measured cooling load is
+  `chw_flow·cp·(chw_return − chw_supply)` with the model's flow and temperature
+  noise.
+- RNG: `default_rng([seed, 100 + sweep_id, case_index, exponent_index,
+  point_index])`, with `case_index` over the 5 cases.
+- Baseline: the same seed's healthy time-series commissioning fit (a, b).
+  S = the window's mean residual.
+- Generate only the needed columns and chunk by (case, n) to bound memory.
+
+**Threshold and pass/fail**
+
+1. θ = μ + 4σ of the pooled calibration population: calibration seeds 0–19,
+   healthy + fouling only. It covers every hourly time-series S of the healthy
+   and fouling runs, plus every healthy and fouling sweep-window S. Use
+   `ddof=1`. Raise if θ ≤ the pooled calibration max.
+2. **False alarms:** for healthy, fouling and blanketing-only, over all 40
+   seeds (report calibration and held-out separately):
+   - time series: alarmed evaluations, and alarmed days (calendar date of the
+     evaluation timestamp);
+   - sweeps: alarmed windows.
+   - PASS requires all of these to be zero.
+3. **Time-series detection:** for each nonzero-p NCG case, the detection delay
+   = first alarm time − `fault_start`.
+   - Report the count detected out of 40, plus median and max delay.
+   - PASS requires 40/40 within the run.
+   - Also report any NCG alarm evaluated before `fault_start` (a window fully
+     healthy). It must be 0 and counts as a false alarm.
+4. **Sweep detection:** for each (NCG case, sweep, n, point), report the
+   detection rate over 40 seeds, the expected (noise-free) excess from PR 3's
+   solver, and p_ncg.
+   - Status is `detected` if the rate is 1.0, otherwise `missed`.
+   - List every missed point.
+   - Also flag the **known corner**: `ncg_blanketed`, CW sweep, 22 °C, n ≥ 9.
+   - Generated corner line:
+     "Known corner (ncg_blanketed, 22 °C CW inlet, n ≥ 9): missed — detection
+     rate …, expected excess … K vs θ … K". If the corner is not missed at
+     every n ≥ 9, stop and report.
+
+Predictions: σ ≈ 0.13 K and θ ≈ 0.5–0.6 K; detection delay ≈ 1 day for Dalton
+and ≈ 1.3 days for blanketed NCG; the known corner and nearby low-CW/high-n
+points are missed.
+
+### Generated detector results
+
+<!-- BEGIN GENERATED: ncg-detector -->
+#### Threshold recovery
+
+- Pre-stated pooled rule:
+  - μ = -0.010819 K
+  - σ = 0.131379 K (ddof=1)
+  - θ = μ + 4σ = 0.514697 K
+- Calibration maximum = 0.520462 K
+- Original pooled-rule gate: **FAILED** (θ ≤ calibration maximum).
+
+| calibration population | n | μ (K) | σ (K) | max (K) | μ + 4σ (K) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| timeseries_hourly | 3840 | -0.014988 | 0.126258 | 0.340908 | 0.490043 |
+| sweep_windows | 1000 | 0.005190 | 0.148408 | 0.520462 | 0.598822 |
+
+- Revised θ = max(population μ + 4σ) = 0.598822 K.
+- Revised threshold gate (θ > pooled calibration maximum): **PASS**.
+
+#### False alarms
+
+| case | seed group | seeds | time-series alarmed evaluations | alarmed days | sweep alarmed windows |
+| --- | --- | ---: | ---: | ---: | ---: |
+| healthy | calibration | 20 | 0 | 0 | 0 |
+| healthy | held-out | 20 | 0 | 0 | 0 |
+| condenser_fouling | calibration | 20 | 0 | 0 | 0 |
+| condenser_fouling | held-out | 20 | 0 | 0 | 0 |
+| ncg_blanketing_only | calibration | 20 | 0 | 0 | 0 |
+| ncg_blanketing_only | held-out | 20 | 0 | 0 | 0 |
+
+#### Time-series NCG detection delay
+
+| NCG case | detected | median delay (h) | max delay (h) | pre-fault alarms | status |
+| --- | ---: | ---: | ---: | ---: | --- |
+| ncg_dalton | 40/40 | 29.00 | 36.00 | 0 | PASS |
+| ncg_blanketed | 40/40 | 38.00 | 55.00 | 0 | PASS |
+| ncg_dalton_ua_matched | 40/40 | 30.00 | 39.00 | 0 | PASS |
+| ncg_blanketed_ua_matched | 40/40 | 41.00 | 61.00 | 0 | PASS |
+
+#### Missed sweep points
+
+- ncg_blanketed, cw: n=7.0–7.5: 22 °C; n=8.0–9.0: 22 °C, 23 °C; n=9.5–10.0: 22 °C, 23 °C, 24 °C.
+- ncg_blanketed, load: n=9.5–10.0: 300 kW.
+- ncg_dalton, cw: n=9.0–9.5: 22 °C; n=10.0: 22 °C, 23 °C.
+
+Known corner (ncg_blanketed, 22 °C CW inlet, n ≥ 9): missed — detection rate n=9.0: 45%, n=9.5: 38%, n=10.0: 18%, expected excess 0.496–0.594 K vs θ 0.599 K.
+
+#### Pass/fail
+
+- Threshold exceeds the pooled calibration maximum: **PASS**.
+- Healthy, fouling, and blanketing-only false alarms are zero: **PASS**.
+- Four nonzero-NCG time-series cases are detected 40/40: **PASS**.
+- NCG pre-fault alarms are zero: **PASS**.
+- Known corner is missed at every n ≥ 9 point: **PASS**.
+<!-- END GENERATED: ncg-detector -->
+
+### Threshold rule failure and revision
+
+The stated pooled rule has μ = −0.0108 K, σ = 0.1314 K, and θ = 0.5147 K,
+below the calibration maximum of 0.5205 K at condenser fouling, 400 kW, seed
+17, so its gate fails. The generated population table contains 3,840 hourly
+time-series evaluations and 1,000 sweep windows. The time-series values are
+strongly autocorrelated and narrower; the sweep windows are independent and
+wider. With the 48-hour commissioning fit,
+the PLR slope b ranges roughly from 0.78 to 1.36 around the true 1.0 and is
+extrapolated from the diurnal PLR range to PLR 0.3–0.95 on the steady-state
+sweeps. The revised rule takes the larger per-population μ + 4σ; its threshold
+is set by the sweep population and is above the pooled calibration maximum.
+
+### Prediction vs outcome
+
+The pooled σ = 0.1314 K agrees with the σ ≈ 0.13 K prediction. The original
+pooled θ = 0.5147 K was within the predicted 0.5–0.6 K range but failed its
+calibration-maximum gate; the revised θ = 0.5988 K is also within that range.
+Detection is 40/40 for each nonzero-NCG case with no pre-fault alarms. Median
+delays are 29 hours for Dalton and 38 hours for blanketed NCG, compared with
+the predictions of about 24 and 31 hours; the UA-matched medians are 30 and 41
+hours. The generated missed-point list and corner line give the observed
+low-CW/high-n sweep misses.
+
+### Limits
+
+The exponent n cannot be measured with the current sensors, so the detector
+cannot know when it is in a collapse or miss region; no alarm there is not
+evidence of no NCG. The detector uses apparent subcooling only, plus PLR for
+baseline correction; it uses no PR 3-withdrawn approach-vs-load or CW-inlet
+sensitivity signature and no UA estimate. Blanketing-only NCG cannot be
+detected by construction. The baseline slope b is estimated from 48 hours of
+diurnal PLR and extrapolated at steady-state PLR extremes; this widens the
+sweep population's statistic spread and raises θ.
