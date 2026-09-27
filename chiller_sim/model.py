@@ -7,6 +7,10 @@ import pandas as pd
 
 R134A_A = 15.425
 R134A_B = 2662.0
+NCG_PARTIAL_PRESSURE_P_A_KPA = 89.2
+NCG_PARTIAL_PRESSURE_P_B_KPA = 58.8
+NCG_PARTIAL_PRESSURE_P_C_KPA = 82.1
+NCG_PARTIAL_PRESSURE_P_D_KPA = 52.9
 
 
 @dataclass(frozen=True)
@@ -17,6 +21,13 @@ class SimulationConfig:
     sample_interval_min: int = 5
     fault_start: str = "2025-07-04 00:00:00"
     max_fault_severity: float = 0.5
+    fault_type: str = "condenser_fouling"
+    ncg_max_partial_pressure_kpa: float = NCG_PARTIAL_PRESSURE_P_A_KPA
+    ncg_blanketing_ua_loss: float = 0.0
+    cond_subcooling_c: float = 2.0
+    subcooling_plr_gain_c: float = 1.0
+    subcooling_ar_phi: float = 0.95
+    subcooling_ar_sd_c: float = 0.3
     rated_capacity_kw: float = 1000.0
     cp_kj_per_kg_k: float = 4.186
     ua_evap_kw_per_k: float = 150.0
@@ -56,10 +67,12 @@ REQUIRED_COLUMNS = (
     "compressor_power_kw",
     "suction_pressure_kpa",
     "discharge_pressure_kpa",
+    "cond_liquid_temp_c",
     "cooling_load_kw",
     "cop",
     "fault_severity",
     "condenser_ua_kw_per_k",
+    "ncg_partial_pressure_kpa",
     "fault_active",
 )
 
@@ -101,9 +114,24 @@ def fault_severity(
     return config.max_fault_severity * ramp
 
 
+def fault_progress(
+    timestamps: pd.DatetimeIndex, config: SimulationConfig
+) -> np.ndarray:
+    fault_time = pd.Timestamp(config.fault_start)
+    last_time = timestamps[-1]
+    if last_time <= fault_time:
+        return np.where(timestamps >= fault_time, 1.0, 0.0)
+
+    elapsed = (timestamps - fault_time).total_seconds().to_numpy()
+    ramp_duration = (last_time - fault_time).total_seconds()
+    return np.clip(elapsed / ramp_duration, 0.0, 1.0)
+
+
 def generate_telemetry(
     config: SimulationConfig = SimulationConfig(),
 ) -> pd.DataFrame:
+    if config.fault_type not in {"condenser_fouling", "non_condensables"}:
+        raise ValueError(f"unsupported fault_type: {config.fault_type}")
     if config.sample_interval_min <= 0:
         raise ValueError("sample_interval_min must be positive")
 
@@ -148,8 +176,16 @@ def generate_telemetry(
         )
     )
     plr = cooling_load_true / config.rated_capacity_kw
-    fault = fault_severity(timestamps, config)
-    condenser_ua = config.ua_cond_kw_per_k * (1.0 - fault)
+    if config.fault_type == "condenser_fouling":
+        fault = fault_severity(timestamps, config)
+        condenser_ua = config.ua_cond_kw_per_k * (1.0 - fault)
+        ncg_partial_pressure = np.zeros(len(timestamps), dtype=float)
+    else:
+        fault = fault_progress(timestamps, config)
+        ncg_partial_pressure = config.ncg_max_partial_pressure_kpa * fault
+        condenser_ua = config.ua_cond_kw_per_k * (
+            1.0 - config.ncg_blanketing_ua_loss * fault
+        )
 
     chw_capacity_rate = config.chw_flow_kg_s * config.cp_kj_per_kg_k
     cw_capacity_rate = config.cw_flow_kg_s * config.cp_kj_per_kg_k
@@ -183,11 +219,23 @@ def generate_telemetry(
             cw_supply_true
             + condenser_load / (condenser_effectiveness * cw_capacity_rate)
         )
-        cop_true = (
-            compressor_efficiency
-            * (evaporator_temp + 273.15)
-            / (condenser_temp - evaporator_temp)
-        )
+        if config.fault_type == "non_condensables":
+            total_pressure = (
+                saturation_pressure_kpa(condenser_temp)
+                + ncg_partial_pressure
+            )
+            lift_temp = saturation_temperature_c(total_pressure)
+            cop_true = (
+                compressor_efficiency
+                * (evaporator_temp + 273.15)
+                / (lift_temp - evaporator_temp)
+            )
+        else:
+            cop_true = (
+                compressor_efficiency
+                * (evaporator_temp + 273.15)
+                / (condenser_temp - evaporator_temp)
+            )
         updated_power = cooling_load_true / cop_true
         if np.max(np.abs(updated_power - compressor_power)) < 1e-9:
             compressor_power = updated_power
@@ -204,7 +252,12 @@ def generate_telemetry(
     )
     cw_return_true = cw_supply_true + condenser_load / cw_capacity_rate
     suction_pressure_true = saturation_pressure_kpa(evaporator_temp)
-    discharge_pressure_true = saturation_pressure_kpa(condenser_temp)
+    if config.fault_type == "non_condensables":
+        discharge_pressure_true = (
+            saturation_pressure_kpa(condenser_temp) + ncg_partial_pressure
+        )
+    else:
+        discharge_pressure_true = saturation_pressure_kpa(condenser_temp)
 
     # Sensor noise draws: wet bulb, four water temperatures, two flows,
     # compressor power, then suction and discharge pressures.
@@ -243,6 +296,23 @@ def generate_telemetry(
         0.0, config.pressure_noise_sd_kpa, len(timestamps)
     )
 
+    rng_liquid = np.random.default_rng([config.seed, 1])
+    subcooling_noise = _ar1(
+        rng_liquid.normal(size=len(timestamps)),
+        config.subcooling_ar_phi,
+        config.subcooling_ar_sd_c,
+    )
+    subcooling = np.clip(
+        config.cond_subcooling_c
+        + config.subcooling_plr_gain_c * (plr - 0.65)
+        + subcooling_noise,
+        0.2,
+        None,
+    )
+    cond_liquid_temp_measured = condenser_temp - subcooling + rng_liquid.normal(
+        0.0, config.temperature_noise_sd_c, len(timestamps)
+    )
+
     measured_cooling_load = (
         chw_flow_measured
         * config.cp_kj_per_kg_k
@@ -264,10 +334,12 @@ def generate_telemetry(
             "compressor_power_kw": compressor_power_measured,
             "suction_pressure_kpa": suction_pressure_measured,
             "discharge_pressure_kpa": discharge_pressure_measured,
+            "cond_liquid_temp_c": cond_liquid_temp_measured,
             "cooling_load_kw": measured_cooling_load,
             "cop": measured_cop,
             "fault_severity": fault,
             "condenser_ua_kw_per_k": condenser_ua,
+            "ncg_partial_pressure_kpa": ncg_partial_pressure,
             "fault_active": fault_active,
         },
         columns=REQUIRED_COLUMNS,

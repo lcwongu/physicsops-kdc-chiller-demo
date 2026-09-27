@@ -1,8 +1,13 @@
 from chiller_sim.model import (
     REQUIRED_COLUMNS,
+    NCG_PARTIAL_PRESSURE_P_A_KPA,
+    NCG_PARTIAL_PRESSURE_P_B_KPA,
+    NCG_PARTIAL_PRESSURE_P_C_KPA,
+    NCG_PARTIAL_PRESSURE_P_D_KPA,
     R134A_A,
     R134A_B,
     SimulationConfig,
+    fault_progress,
     fault_severity,
     generate_telemetry,
     save_telemetry,
@@ -12,9 +17,14 @@ from chiller_sim.model import (
 
 __all__ = [
     "REQUIRED_COLUMNS",
+    "NCG_PARTIAL_PRESSURE_P_A_KPA",
+    "NCG_PARTIAL_PRESSURE_P_B_KPA",
+    "NCG_PARTIAL_PRESSURE_P_C_KPA",
+    "NCG_PARTIAL_PRESSURE_P_D_KPA",
     "R134A_A",
     "R134A_B",
     "SimulationConfig",
+    "fault_progress",
     "fault_severity",
     "generate_telemetry",
     "save_telemetry",
