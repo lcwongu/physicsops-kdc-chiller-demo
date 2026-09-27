@@ -15,6 +15,7 @@ pip install -r requirements.txt
 python -m chiller_sim --seed 42 --output data/chiller_telemetry.csv
 python -m chiller_sim --seed 42 --fault non_condensables --output data/chiller_telemetry_ncg.csv
 python -m chiller_sim.sweeps
+python -m chiller_sim.detector
 python -m pytest -q
 ```
 
@@ -211,3 +212,9 @@ approach signatures remain separable as NCG partial pressure scales with
 reference refrigerant pressure, and writes the sweep summary and figures under
 `reports/`. The shared vectorized operating-point solver is exposed as
 `chiller_sim.solve_operating_point`.
+
+`python -m chiller_sim.detector` evaluates a trend-and-threshold detector that
+uses apparent subcooling with a PLR baseline correction. It calibrates its
+threshold on healthy and fouling populations, then reports time-series
+detection delays, false alarms, and steady-state sweep detection limits under
+`reports/`.
