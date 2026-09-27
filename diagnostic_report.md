@@ -141,6 +141,7 @@ pip install -r requirements.txt
 python -m chiller_sim --seed 42 --output data/chiller_telemetry.csv
 python -m chiller_sim.report
 python -m chiller_sim.separation
+python -m chiller_sim.sweeps
 python -m pytest -q
 ```
 
@@ -295,3 +296,108 @@ while overlapping the other three variants, so it is not claimed either.
 - Separability uses the observed interval gap over 20 seeds and the rule
   `gap > 0`; this is not a statistical guarantee.
 - The accelerated four-day fault ramp still applies.
+
+## Third analysis: operating-point sweeps (does the approach-vs-load separator survive?)
+
+### Stated before implementation
+
+1. Load sweep, fixed p_ncg (n = 0):
+   - the approach-vs-load elasticity separates: fouling ≈ 1, Dalton NCG ≈ 0 or slightly negative, blanketed NCG in between;
+   - apparent subcooling separates at every load: fouling ≈ 0, NCG ≈ +2–3 K;
+   - discharge and power excess match only at the reference point.
+2. CW-inlet sweep, n = 0:
+   - apparent subcooling stays separated; the NCG offset shrinks about 20 % but stays well above fouling;
+   - the approach excess is nearly flat for fouling and falls about 2 %/K for Dalton NCG, which rests on the fixed_p_ncg assumption.
+3. Load sweep with p_ncg ∝ P_ref^n:
+   - at n = 1 the NCG offset grows only about 7 %, so the load separator survives;
+   - it collapses only near n ≈ 7–8 for Dalton, and lower for blanketed;
+   - the CW-inlet signature collapses near n ≈ 1;
+   - apparent subcooling survives every n.
+4. Verdict: the approach-vs-load separator is conditional on n below its collapse value, which is unobservable, so it is not claimed. Apparent subcooling remains the only separator. Blanketing-only NCG stays inseparable.
+
+### Sweep model
+
+The load sweep uses 300–950 kW in 50 kW increments at a 28 °C condenser-water
+inlet. The CW-inlet sweep uses 22–32 °C in 1 °C increments at 650 kW. Both use
+the same calibrated reference operating point (650 kW, 28 °C). Each point is
+evaluated noise-free, then with 12 sensor samples for each of 20 seeds.
+
+For NCG cases, the partial pressure is
+`p_ncg = p_ncg,ref * (P_ref / P_ref,calibrated)^n`, where `P_ref` is the
+refrigerant saturation pressure at the condenser heat-transfer temperature.
+`n = 0` represents a fixed NCG pocket, `n = 1` a constant NCG mole fraction,
+and `n > 1` a pocket compressed as load rises. The exponent is not observable
+from the current sensors. The Dalton and blanketed NCG cases are calibrated
+against the fouling discharge-pressure excess at the reference point. The
+blanketing-only case uses the fouling UA with zero NCG partial pressure and is
+fouling by construction.
+
+The shared `solve_operating_point` fixed-point solver is used by the telemetry
+generator and both sweeps. Sensor synthesis uses the existing noise scales;
+liquid temperature is condenser temperature minus the modeled, clipped
+subcooling plus sensor noise. Healthy samples use a common random stream for
+all fault cases within each seed and sweep.
+
+### Generated sweep results
+
+<!-- BEGIN GENERATED: sweep-separation -->
+#### Calibration at the reference operating point
+
+| case | condenser UA (kW/K) | p_ncg at reference (kPa) | reference P_sat (kPa) |
+| --- | ---: | ---: | ---: |
+| condenser_fouling | 100.0 | 0.000 | 962.394 |
+| ncg_dalton | 200.0 | 97.208 | 865.186 |
+| ncg_blanketed | 150.0 | 66.284 | 896.110 |
+| ncg_blanketing_only | 100.0 | 0.000 | 962.394 |
+
+#### Separation and collapse bands
+
+| signature | sweep | case | separable at n=0 | collapse band n |
+| --- | --- | --- |:---:| --- |
+| apparent_subcooling_excess_c | cw | ncg_blanketed | yes | 9.0, 9.5, 10.0 |
+| apparent_subcooling_excess_c | cw | ncg_blanketing_only | no | 0.0 |
+| apparent_subcooling_excess_c | cw | ncg_dalton | yes | none |
+| apparent_subcooling_excess_c | load | ncg_blanketed | yes | none |
+| apparent_subcooling_excess_c | load | ncg_blanketing_only | no | 0.0 |
+| apparent_subcooling_excess_c | load | ncg_dalton | yes | none |
+| approach_cw_sensitivity_pct_per_k | cw | ncg_blanketed | yes | 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0 |
+| approach_cw_sensitivity_pct_per_k | cw | ncg_blanketing_only | no | 0.0 |
+| approach_cw_sensitivity_pct_per_k | cw | ncg_dalton | yes | 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0 |
+| approach_load_elasticity | load | ncg_blanketed | yes | 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0 |
+| approach_load_elasticity | load | ncg_blanketing_only | no | 0.0 |
+| approach_load_elasticity | load | ncg_dalton | yes | 7.5, 8.0, 8.5, 9.0, 9.5, 10.0 |
+
+Load-elasticity NaN rows (nonpositive approach excess): 0.
+
+Claimed separators (every sweep, every n, every NCG case with nonzero partial pressure): none.
+
+Not claimed (collapses or reverses in at least one sweep): approach_load_elasticity, approach_cw_sensitivity_pct_per_k, apparent_subcooling_excess_c.
+
+ncg_blanketing_only (fouling by construction): no separator claimed.
+<!-- END GENERATED: sweep-separation -->
+
+### Prediction vs outcome
+
+At n=0, the generated table reports separation for approach-load elasticity
+and apparent subcooling in their applicable sweeps for both nonzero-partial-
+pressure NCG cases. The load-elasticity collapse band begins at n=7.5 for
+Dalton NCG and n=6.0 for blanketed NCG; CW sensitivity collapses from n=1.0
+for both cases. These collapse locations follow the stated prediction.
+
+Apparent subcooling does not survive every exponent in every sweep: its CW
+collapse band for blanketed NCG is n=9.0, 9.5, and 10.0. The generated claim
+line is therefore empty under the all-sweeps/all-exponents rule, contrary to
+the prediction that apparent subcooling is the only separator. The
+load-elasticity calculation produced no NaN rows.
+
+### What still separates fouling from NCG, and what does not
+
+No signature is claimed across both sweep types, all tested exponents, and
+both nonzero-partial-pressure NCG cases. Apparent subcooling separates for
+Dalton NCG throughout the tested grid and for blanketed NCG except at the
+listed high-exponent CW points. Approach-load elasticity separates at n=0
+but collapses at higher exponents, while CW sensitivity collapses from n=1.
+PR 2's `approach_load_slope_change` claim is withdrawn as an unconditional
+separator: its operating-point analogue is conditional on n, which is not
+observable from the current sensors. The blanketing-only NCG case remains
+ambiguous because it is fouling by construction.

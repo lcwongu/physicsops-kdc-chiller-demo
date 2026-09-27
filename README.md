@@ -14,6 +14,7 @@ From the repository root:
 pip install -r requirements.txt
 python -m chiller_sim --seed 42 --output data/chiller_telemetry.csv
 python -m chiller_sim --seed 42 --fault non_condensables --output data/chiller_telemetry_ncg.csv
+python -m chiller_sim.sweeps
 python -m pytest -q
 ```
 
@@ -201,3 +202,12 @@ pressure-matched Dalton and blanketed NCG, and UA-estimate-matched Dalton and
 blanketed NCG. It writes per-seed metrics, interval-overlap summaries, and
 plots under `reports/`. Separation is claimed only when a metric's observed
 fouling range is disjoint from all four NCG ranges.
+
+## Operating-point sweeps
+
+`python -m chiller_sim.sweeps` compares noise-free steady-state load and
+condenser-water-inlet sweeps with seeded sensor noise. It tests whether the
+approach signatures remain separable as NCG partial pressure scales with
+reference refrigerant pressure, and writes the sweep summary and figures under
+`reports/`. The shared vectorized operating-point solver is exposed as
+`chiller_sim.solve_operating_point`.
