@@ -5,6 +5,10 @@ import numpy as np
 import pandas as pd
 
 
+R134A_A = 15.425
+R134A_B = 2662.0
+
+
 @dataclass(frozen=True)
 class SimulationConfig:
     seed: int = 42
@@ -58,6 +62,14 @@ REQUIRED_COLUMNS = (
     "condenser_ua_kw_per_k",
     "fault_active",
 )
+
+
+def saturation_pressure_kpa(t_c: float | np.ndarray) -> float | np.ndarray:
+    return np.exp(R134A_A - R134A_B / (t_c + 273.15))
+
+
+def saturation_temperature_c(p_kpa: float | np.ndarray) -> float | np.ndarray:
+    return R134A_B / (R134A_A - np.log(p_kpa)) - 273.15
 
 
 def _ar1(
@@ -191,12 +203,8 @@ def generate_telemetry(
         + condenser_load / (condenser_effectiveness * cw_capacity_rate)
     )
     cw_return_true = cw_supply_true + condenser_load / cw_capacity_rate
-    suction_pressure_true = np.exp(
-        15.425 - 2662.0 / (evaporator_temp + 273.15)
-    )
-    discharge_pressure_true = np.exp(
-        15.425 - 2662.0 / (condenser_temp + 273.15)
-    )
+    suction_pressure_true = saturation_pressure_kpa(evaporator_temp)
+    discharge_pressure_true = saturation_pressure_kpa(condenser_temp)
 
     # Sensor noise draws: wet bulb, four water temperatures, two flows,
     # compressor power, then suction and discharge pressures.

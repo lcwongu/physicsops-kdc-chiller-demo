@@ -15,6 +15,12 @@ python -m chiller_sim --seed 42 --output data/chiller_telemetry.csv
 python -m pytest -q
 ```
 
+## Diagnostics
+
+Install matplotlib with `pip install -r requirements.txt`, then run
+`python -m chiller_sim.report` to create `diagnostic_report.md`, the hourly
+diagnostic plots, and `reports/diagnostic_summary.csv`.
+
 The CLI defaults to seed `42` and `data/chiller_telemetry.csv`. Generation
 uses one `numpy.random.default_rng(seed)`. Random draws are deterministic and
 ordered as follows: one timestamp-ordered matrix of standard-normal
