@@ -172,11 +172,13 @@ COP_true = η(PLR) * (T_evap + 273.15)/(T_lift - T_evap)
 ```
 
 The Dalton-only case leaves condenser UA at its healthy value. The blanketed
-case adds a 25% UA loss at full progress. At seed 42, bisection calibrates each
-partial-pressure maximum so the final-24-hour, hour-matched discharge-pressure
-delta matches the fouling reference (`+86.167 kPa`): `P_A = 89.2 kPa` with no
-blanketing and `P_B = 58.8 kPa` with 25% blanketing. Both values are rounded to
-0.1 kPa.
+case adds a 25% UA loss at full progress. At seed 42, bisection calibrates two
+pairs of partial-pressure maxima: the discharge-pressure-matched cases
+(`P_A = 89.2 kPa` with no blanketing, `P_B = 58.8 kPa` with 25% blanketing)
+match the fouling reference's `+86.167 kPa` discharge-pressure delta. The
+UA-estimate-matched cases (`P_C = 82.1 kPa` with no blanketing,
+`P_D = 52.9 kPa` with 25% blanketing) match its final-24-hour UA-estimate
+percentage change. All values are rounded to 0.1 kPa.
 
 One condenser liquid-temperature sensor is added. Its modeled subcooling is
 `clip(2.0 + 1.0*(PLR - 0.65) + AR1(phi=0.95, sd=0.3 °C), 0.2, ∞)`, with
@@ -200,40 +202,74 @@ the sensor baseline before fault start is shared.
 
 ### Calibration and seed-42 comparison
 
-| case | max NCG partial pressure (kPa) | blanketing UA loss | discharge pressure Δ (kPa) | diagnose() mechanism |
-| --- | ---: | ---: | ---: | --- |
-| condenser_fouling | 0.000 | 0.000 | 86.167 | condenser heat-transfer degradation (waterside fouling/scaling) |
-| ncg_dalton | 89.200 | 0.000 | 86.124 | condenser heat-transfer degradation (waterside fouling/scaling) |
-| ncg_blanketed | 58.800 | 0.250 | 86.205 | condenser heat-transfer degradation (waterside fouling/scaling) |
+| case | calibration target | max NCG partial pressure (kPa) | blanketing UA loss | discharge pressure Δ (kPa) | UA estimate Δ (%) | diagnose() mechanism |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| condenser_fouling | reference | 0.000 | 0.000 | 86.167 | -43.639 | condenser heat-transfer degradation (waterside fouling/scaling) |
+| ncg_dalton | discharge pressure | 89.200 | 0.000 | 86.124 | -45.528 | condenser heat-transfer degradation (waterside fouling/scaling) |
+| ncg_blanketed | discharge pressure | 58.800 | 0.250 | 86.205 | -45.260 | condenser heat-transfer degradation (waterside fouling/scaling) |
+| ncg_dalton_ua_matched | UA estimate | 82.100 | 0.000 | 79.714 | -43.640 | condenser heat-transfer degradation (waterside fouling/scaling) |
+| ncg_blanketed_ua_matched | UA estimate | 52.900 | 0.250 | 80.843 | -43.649 | condenser heat-transfer degradation (waterside fouling/scaling) |
 
 ### Seed-sweep ranges and interval gaps
 
-| metric | source | fouling range | ncg_dalton range | gap | separable | ncg_blanketed range | gap | separable |
-| --- | --- | ---: | ---: | ---: | --- | ---: | ---: | --- |
-| discharge_pressure_delta_kpa | current sensors | 71.010–96.042 | 71.332–91.269 | -20.259 | no | 71.296–92.912 | -21.902 | no |
-| compressor_power_pct | current sensors | 8.547–17.195 | 8.126–16.223 | -7.677 | no | 8.322–16.559 | -8.012 | no |
-| cop_pct | current sensors | -10.741–-8.144 | -11.266–-9.166 | -1.575 | no | -11.142–-8.879 | -1.862 | no |
-| ua_cond_est_pct | current sensors | -44.066–-43.494 | -46.543–-44.345 | 0.279 | yes | -46.130–-44.494 | 0.428 | yes |
-| condenser_approach_delta_c | current sensors | 2.985–3.302 | 3.103–3.217 | -0.199 | no | 3.078–3.251 | -0.225 | no |
-| cw_range_delta_c | current sensors | -0.007–0.241 | -0.008–0.235 | -0.242 | no | -0.008–0.237 | -0.244 | no |
-| approach_load_slope_change_k_per_100kw | current sensors | 0.348–0.380 | -0.142–-0.103 | 0.452 | yes | 0.027–0.062 | 0.287 | yes |
-| apparent_subcooling_delta_c | added liquid-temperature sensor | -0.158–0.180 | 2.932–3.255 | 2.751 | yes | 1.857–2.184 | 1.677 | yes |
+| metric | source | fouling range | NCG case | NCG range | gap | separable |
+| --- | --- | ---: | --- | ---: | ---: | --- |
+| discharge_pressure_delta_kpa | current sensors | 71.010–96.042 | ncg_dalton | 71.332–91.269 | -20.259 | no |
+| discharge_pressure_delta_kpa | current sensors | 71.010–96.042 | ncg_blanketed | 71.296–92.912 | -21.902 | no |
+| discharge_pressure_delta_kpa | current sensors | 71.010–96.042 | ncg_dalton_ua_matched | 64.922–84.849 | -13.839 | no |
+| discharge_pressure_delta_kpa | current sensors | 71.010–96.042 | ncg_blanketed_ua_matched | 65.934–87.541 | -16.531 | no |
+| compressor_power_pct | current sensors | 8.547–17.195 | ncg_dalton | 8.126–16.223 | -7.677 | no |
+| compressor_power_pct | current sensors | 8.547–17.195 | ncg_blanketed | 8.322–16.559 | -8.012 | no |
+| compressor_power_pct | current sensors | 8.547–17.195 | ncg_dalton_ua_matched | 7.337–15.392 | -6.846 | no |
+| compressor_power_pct | current sensors | 8.547–17.195 | ncg_blanketed_ua_matched | 7.663–15.865 | -7.319 | no |
+| cop_pct | current sensors | -10.741–-8.144 | ncg_dalton | -11.266–-9.166 | -1.575 | no |
+| cop_pct | current sensors | -10.741–-8.144 | ncg_blanketed | -11.142–-8.879 | -1.862 | no |
+| cop_pct | current sensors | -10.741–-8.144 | ncg_dalton_ua_matched | -10.584–-8.450 | -2.291 | no |
+| cop_pct | current sensors | -10.741–-8.144 | ncg_blanketed_ua_matched | -10.570–-8.275 | -2.426 | no |
+| ua_cond_est_pct | current sensors | -44.066–-43.494 | ncg_dalton | -46.543–-44.345 | 0.279 | yes |
+| ua_cond_est_pct | current sensors | -44.066–-43.494 | ncg_blanketed | -46.130–-44.494 | 0.428 | yes |
+| ua_cond_est_pct | current sensors | -44.066–-43.494 | ncg_dalton_ua_matched | -44.671–-42.472 | -1.176 | no |
+| ua_cond_est_pct | current sensors | -44.066–-43.494 | ncg_blanketed_ua_matched | -44.519–-42.922 | -1.025 | no |
+| condenser_approach_delta_c | current sensors | 2.985–3.302 | ncg_dalton | 3.103–3.217 | -0.199 | no |
+| condenser_approach_delta_c | current sensors | 2.985–3.302 | ncg_blanketed | 3.078–3.251 | -0.225 | no |
+| condenser_approach_delta_c | current sensors | 2.985–3.302 | ncg_dalton_ua_matched | 2.861–2.977 | 0.009 | yes |
+| condenser_approach_delta_c | current sensors | 2.985–3.302 | ncg_blanketed_ua_matched | 2.875–3.051 | -0.065 | no |
+| cw_range_delta_c | current sensors | -0.007–0.241 | ncg_dalton | -0.008–0.235 | -0.242 | no |
+| cw_range_delta_c | current sensors | -0.007–0.241 | ncg_blanketed | -0.008–0.237 | -0.244 | no |
+| cw_range_delta_c | current sensors | -0.007–0.241 | ncg_dalton_ua_matched | -0.013–0.230 | -0.236 | no |
+| cw_range_delta_c | current sensors | -0.007–0.241 | ncg_blanketed_ua_matched | -0.012–0.233 | -0.239 | no |
+| approach_load_slope_change_k_per_100kw | current sensors | 0.348–0.380 | ncg_dalton | -0.142–-0.103 | 0.452 | yes |
+| approach_load_slope_change_k_per_100kw | current sensors | 0.348–0.380 | ncg_blanketed | 0.027–0.062 | 0.287 | yes |
+| approach_load_slope_change_k_per_100kw | current sensors | 0.348–0.380 | ncg_dalton_ua_matched | -0.133–-0.095 | 0.444 | yes |
+| approach_load_slope_change_k_per_100kw | current sensors | 0.348–0.380 | ncg_blanketed_ua_matched | 0.036–0.069 | 0.279 | yes |
+| apparent_subcooling_delta_c | added liquid-temperature sensor | -0.158–0.180 | ncg_dalton | 2.932–3.255 | 2.751 | yes |
+| apparent_subcooling_delta_c | added liquid-temperature sensor | -0.158–0.180 | ncg_blanketed | 1.857–2.184 | 1.677 | yes |
+| apparent_subcooling_delta_c | added liquid-temperature sensor | -0.158–0.180 | ncg_dalton_ua_matched | 2.694–3.018 | 2.513 | yes |
+| apparent_subcooling_delta_c | added liquid-temperature sensor | -0.158–0.180 | ncg_blanketed_ua_matched | 1.659–1.987 | 1.479 | yes |
 
-Claimed separators (disjoint from fouling for every NCG variant): ua_cond_est_pct, approach_load_slope_change_k_per_100kw, apparent_subcooling_delta_c.
-Overlapping or not robust: discharge_pressure_delta_kpa, compressor_power_pct, cop_pct, condenser_approach_delta_c, cw_range_delta_c.
+Claimed separators (disjoint from fouling for every NCG variant): approach_load_slope_change_k_per_100kw, apparent_subcooling_delta_c.
+Overlapping or not robust: discharge_pressure_delta_kpa, compressor_power_pct, cop_pct, ua_cond_est_pct, condenser_approach_delta_c, cw_range_delta_c.
 
 Seed-42 `diagnose()` mechanisms:
 - condenser_fouling: condenser heat-transfer degradation (waterside fouling/scaling)
 - ncg_dalton: condenser heat-transfer degradation (waterside fouling/scaling)
 - ncg_blanketed: condenser heat-transfer degradation (waterside fouling/scaling)
+- ncg_dalton_ua_matched: condenser heat-transfer degradation (waterside fouling/scaling)
+- ncg_blanketed_ua_matched: condenser heat-transfer degradation (waterside fouling/scaling)
 
 <!-- END GENERATED: fault-separation -->
 
-**Result to notice:** contrary to the pre-coding expectation, the sensor-derived
-UA percentage change and the approach-versus-load slope are disjoint from both
-NCG variants over the tested seeds. Discharge-pressure, power, COP, approach,
-and CW-range changes overlap; apparent subcooling separates both NCG variants.
-The generated ranges above determine these claims.
+### Rejected separation claims
+
+The discharge-pressure-matched runs show UA-estimate interval gaps of `+0.279`
+and `+0.428` percentage points in the generated table. Those gaps are below
+the `±3%` daily UA-estimate accuracy validated in PR1, and arise as residual
+differences under one chosen calibration target rather than as a mechanism
+signature. The four-variant rule therefore requires separation against both
+discharge-pressure-matched and UA-estimate-matched cases; the generated claim
+line shows that only approach-versus-load slope and apparent subcooling remain
+claimed separators. UA-estimate percentage change is no longer claimed because
+it overlaps both UA-estimate-matched variants.
 
 ![Seed-42 fault comparison](reports/fault_comparison_timeseries.png)
 

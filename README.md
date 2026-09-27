@@ -144,11 +144,12 @@ cop = cooling_load_kw / compressor_power_kw
 The fault starts at `2025-07-04 00:00`. Condenser UA degrades linearly from
 healthy operation to a 50% loss at the final sample (`fault_severity = 0.5`,
 `condenser_ua_kw_per_k = 100`). For NCG, `fault_severity` is the unit progress
-from 0 to 1; the default Dalton case reaches `89.2 kPa` partial pressure, and
-the blanketed variant reaches `58.8 kPa` with a 25% UA loss at full progress.
-The NCG default pressure is calibrated to match the fouling case's seed-42
-final-24-hour discharge-pressure rise. Severity/progress is zero before the
-fault start; `fault_active` switches to `1` at and after that time.
+from 0 to 1. Discharge-pressure-matched NCG cases reach `89.2 kPa` (Dalton) and
+`58.8 kPa` (25% blanketing) at full progress. UA-estimate-matched cases reach
+`82.1 kPa` (Dalton) and `52.9 kPa` (25% blanketing). The former match the
+fouling case's seed-42 final-24-hour discharge-pressure rise; the latter match
+its sensor-estimated UA percentage change. Severity/progress is zero before
+the fault start; `fault_active` switches to `1` at and after that time.
 
 Real condenser fouling usually builds over weeks to months. This demo
 compresses the ramp into four days so the fault is visible in a one-week
@@ -195,7 +196,8 @@ daily load and wet-bulb cycles.
 
 `derive_signals` adds apparent subcooling from discharge-pressure saturation
 temperature minus measured condenser liquid temperature. Run
-`python -m chiller_sim.separation` to compare 20 seeds of fouling, Dalton-only
-NCG, and blanketed NCG. It writes per-seed metrics, interval-overlap summaries,
-and plots under `reports/`. Separation is claimed only when a metric's
-observed fouling range is disjoint from both NCG ranges.
+`python -m chiller_sim.separation` to compare 20 seeds of fouling, discharge-
+pressure-matched Dalton and blanketed NCG, and UA-estimate-matched Dalton and
+blanketed NCG. It writes per-seed metrics, interval-overlap summaries, and
+plots under `reports/`. Separation is claimed only when a metric's observed
+fouling range is disjoint from all four NCG ranges.

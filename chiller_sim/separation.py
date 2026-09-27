@@ -18,6 +18,8 @@ from chiller_sim.diagnostics import (
 )
 from chiller_sim.model import (
     NCG_PARTIAL_PRESSURE_P_B_KPA,
+    NCG_PARTIAL_PRESSURE_P_C_KPA,
+    NCG_PARTIAL_PRESSURE_P_D_KPA,
     SimulationConfig,
     generate_telemetry,
 )
@@ -31,8 +33,29 @@ FAULT_CASES = {
         "ncg_max_partial_pressure_kpa": NCG_PARTIAL_PRESSURE_P_B_KPA,
         "ncg_blanketing_ua_loss": 0.25,
     },
+    "ncg_dalton_ua_matched": {
+        "fault_type": "non_condensables",
+        "ncg_max_partial_pressure_kpa": NCG_PARTIAL_PRESSURE_P_C_KPA,
+    },
+    "ncg_blanketed_ua_matched": {
+        "fault_type": "non_condensables",
+        "ncg_max_partial_pressure_kpa": NCG_PARTIAL_PRESSURE_P_D_KPA,
+        "ncg_blanketing_ua_loss": 0.25,
+    },
+}
+CALIBRATION_TARGETS = {
+    "condenser_fouling": "reference",
+    "ncg_dalton": "discharge pressure",
+    "ncg_blanketed": "discharge pressure",
+    "ncg_dalton_ua_matched": "UA estimate",
+    "ncg_blanketed_ua_matched": "UA estimate",
 }
 REFERENCE_CASE = "condenser_fouling"
+DISCHARGE_PRESSURE_MATCHED_CASES = (
+    REFERENCE_CASE,
+    "ncg_dalton",
+    "ncg_blanketed",
+)
 SEPARATION_SEEDS = tuple(range(20))
 SEPARATION_METRICS = (
     ("discharge_pressure_delta_kpa", "current sensors"),
@@ -207,9 +230,10 @@ def separation_markdown(
 ) -> str:
     seed42_metrics = _seed42_metrics()
     calibration_rows = [
-        "| case | max NCG partial pressure (kPa) | blanketing UA loss | "
-        "discharge pressure Δ (kPa) | diagnose() mechanism |",
-        "| --- | ---: | ---: | ---: | --- |",
+        "| case | calibration target | max NCG partial pressure (kPa) | "
+        "blanketing UA loss | discharge pressure Δ (kPa) | "
+        "UA estimate Δ (%) | diagnose() mechanism |",
+        "| --- | --- | ---: | ---: | ---: | ---: | --- |",
     ]
     for case, overrides in FAULT_CASES.items():
         config = SimulationConfig(seed=42, **overrides)
@@ -223,11 +247,13 @@ def separation_markdown(
             + " | ".join(
                 (
                     case,
+                    CALIBRATION_TARGETS[case],
                     _format_three(ncg_pressure),
                     _format_three(config.ncg_blanketing_ua_loss),
                     _format_three(
                         seed42_metrics[case]["discharge_pressure_delta_kpa"]
                     ),
+                    _format_three(seed42_metrics[case]["ua_cond_est_pct"]),
                     seed42_diagnoses[case],
                 )
             )
@@ -235,29 +261,34 @@ def separation_markdown(
         )
 
     range_rows = [
-        "| metric | source | fouling range | ncg_dalton range | gap | separable | "
-        "ncg_blanketed range | gap | separable |",
-        "| --- | --- | ---: | ---: | ---: | --- | ---: | ---: | --- |",
+        "| metric | source | fouling range | NCG case | NCG range | gap | separable |",
+        "| --- | --- | ---: | --- | ---: | ---: | --- |",
     ]
-    sep_by_key = sep.set_index(["metric", "case"])
     for metric, source in SEPARATION_METRICS:
         reference = dist.loc[dist["case"] == REFERENCE_CASE, metric]
-        cells = [
-            metric,
-            source,
-            f"{_format_three(reference.min())}–{_format_three(reference.max())}",
-        ]
-        for case in ("ncg_dalton", "ncg_blanketed"):
+        reference_range = (
+            f"{_format_three(reference.min())}–{_format_three(reference.max())}"
+        )
+        for case in FAULT_CASES:
+            if case == REFERENCE_CASE:
+                continue
             values = dist.loc[dist["case"] == case, metric]
-            row = sep_by_key.loc[(metric, case)]
-            cells.extend(
-                [
-                    f"{_format_three(values.min())}–{_format_three(values.max())}",
-                    _format_three(row["gap"]),
-                    "yes" if bool(row["separable"]) else "no",
-                ]
+            row = sep.loc[(sep["metric"] == metric) & (sep["case"] == case)].iloc[0]
+            range_rows.append(
+                "| "
+                + " | ".join(
+                    (
+                        metric,
+                        source,
+                        reference_range,
+                        case,
+                        f"{_format_three(values.min())}–{_format_three(values.max())}",
+                        _format_three(row["gap"]),
+                        "yes" if bool(row["separable"]) else "no",
+                    )
+                )
+                + " |"
             )
-        range_rows.append("| " + " | ".join(cells) + " |")
 
     claimed = claims.loc[
         claims["separable_vs_all_ncg_variants"], "metric"
@@ -322,6 +353,7 @@ def _timeseries_plot(
         ("apparent_subcooling_c", "Apparent subcooling (°C)"),
     )
     fig, axes = plt.subplots(6, 1, figsize=(13, 18), sharex=True)
+    fig.suptitle("Seed-42 time series: three discharge-pressure-matched cases")
     fault_start = pd.Timestamp(SimulationConfig().fault_start)
     for case, (config, df) in cases.items():
         hourly = (
@@ -338,7 +370,7 @@ def _timeseries_plot(
         axis.grid(True, alpha=0.25)
         axis.legend()
     axes[-1].set_xlabel("Timestamp")
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 0.98))
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
 
@@ -355,6 +387,8 @@ def _ranges_plot(
         "condenser_fouling": "tab:blue",
         "ncg_dalton": "tab:orange",
         "ncg_blanketed": "tab:green",
+        "ncg_dalton_ua_matched": "tab:red",
+        "ncg_blanketed_ua_matched": "tab:purple",
     }
     claimed = claims.set_index("metric")["separable_vs_all_ncg_variants"]
     rng = np.random.default_rng(42)
@@ -373,6 +407,9 @@ def _ranges_plot(
                 s=24,
             )
         axis.set_xticks(range(len(FAULT_CASES)), list(FAULT_CASES))
+        axis.tick_params(axis="x", labelrotation=15)
+        for label in axis.get_xticklabels():
+            label.set_ha("right")
         verdict = "separable" if bool(claimed.loc[metric]) else "overlap"
         axis.set_title(f"{metric}: {verdict}")
         axis.grid(axis="y", alpha=0.25)
@@ -387,6 +424,9 @@ def _load_signature_plot(
     output_path: Path,
 ) -> None:
     fig, axis = plt.subplots(figsize=(10, 6))
+    fig.suptitle(
+        "Condenser approach vs heat: three discharge-pressure-matched cases"
+    )
     colors = {
         "condenser_fouling": "tab:blue",
         "ncg_dalton": "tab:orange",
@@ -439,7 +479,7 @@ def _load_signature_plot(
     axis.set_ylabel("Condenser approach (°C)")
     axis.grid(True, alpha=0.25)
     axis.legend(ncol=2, fontsize="small")
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
 
@@ -464,14 +504,19 @@ def generate_separation_report(
         case: diagnose(compare_periods(df, config)).mechanism
         for case, (config, df) in seed42_cases.items()
     }
+    discharge_matched_cases = {
+        case: seed42_cases[case] for case in DISCHARGE_PRESSURE_MATCHED_CASES
+    }
     _timeseries_plot(
-        seed42_cases, output_directory / "fault_comparison_timeseries.png"
+        discharge_matched_cases,
+        output_directory / "fault_comparison_timeseries.png",
     )
     _ranges_plot(
         dist, claims, output_directory / "fault_separation_ranges.png"
     )
     _load_signature_plot(
-        seed42_cases, output_directory / "fault_load_signature.png"
+        discharge_matched_cases,
+        output_directory / "fault_load_signature.png",
     )
 
     generated = separation_markdown(dist, sep, claims, seed42_diagnoses)

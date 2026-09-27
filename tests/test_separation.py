@@ -7,6 +7,8 @@ import pytest
 from chiller_sim import (
     NCG_PARTIAL_PRESSURE_P_A_KPA,
     NCG_PARTIAL_PRESSURE_P_B_KPA,
+    NCG_PARTIAL_PRESSURE_P_C_KPA,
+    NCG_PARTIAL_PRESSURE_P_D_KPA,
     REQUIRED_COLUMNS,
     SimulationConfig,
     generate_telemetry,
@@ -110,6 +112,22 @@ def test_seed42_discharge_pressure_calibration() -> None:
         assert abs(metrics["discharge_pressure_delta_kpa"] - target) <= 3.0
 
 
+def test_seed42_ua_matched_calibration_within_half_percentage_point() -> None:
+    fouling_config = SimulationConfig(seed=42)
+    fouling_metrics = case_metrics(
+        generate_telemetry(fouling_config), fouling_config
+    )
+    target = fouling_metrics["ua_cond_est_pct"]
+    for case, pressure in (
+        ("ncg_dalton_ua_matched", NCG_PARTIAL_PRESSURE_P_C_KPA),
+        ("ncg_blanketed_ua_matched", NCG_PARTIAL_PRESSURE_P_D_KPA),
+    ):
+        config = SimulationConfig(seed=42, **FAULT_CASES[case])
+        metrics = case_metrics(generate_telemetry(config), config)
+        assert config.ncg_max_partial_pressure_kpa == pressure
+        assert abs(metrics["ua_cond_est_pct"] - target) <= 0.5
+
+
 def test_interval_gap_overlap_touching_and_disjoint() -> None:
     assert interval_gap(np.array([0.0, 1.0]), np.array([0.5, 1.5])) < 0.0
     assert interval_gap(np.array([0.0, 1.0]), np.array([1.0, 2.0])) == 0.0
@@ -119,18 +137,42 @@ def test_interval_gap_overlap_touching_and_disjoint() -> None:
 def test_overlapping_metric_ranges_are_not_claimed() -> None:
     rows = []
     for metric, _ in SEPARATION_METRICS:
-        rows.extend(
-            [
-                {"case": REFERENCE_CASE, "seed": 0, metric: 1.0},
-                {"case": "ncg_dalton", "seed": 0, metric: 1.0},
-                {"case": "ncg_blanketed", "seed": 0, metric: 1.0},
-            ]
-        )
+        for case in FAULT_CASES:
+            rows.append({"case": case, "seed": 0, metric: 1.0})
     dist = pd.DataFrame(rows)
     sep = separability(dist)
     claims = separation_claims(sep)
     assert not sep["separable"].any()
     assert not claims["separable_vs_all_ncg_variants"].any()
+
+
+def test_disjoint_discharge_calibrations_do_not_override_ua_match_overlap() -> None:
+    ua_ranges = {
+        REFERENCE_CASE: (0.0, 1.0),
+        "ncg_dalton": (-2.0, -1.0),
+        "ncg_blanketed": (2.0, 3.0),
+        "ncg_dalton_ua_matched": (0.5, 1.5),
+        "ncg_blanketed_ua_matched": (3.0, 4.0),
+    }
+    rows = []
+    for case, (low, high) in ua_ranges.items():
+        for seed, value in enumerate((low, high)):
+            row = {"case": case, "seed": seed}
+            for metric, _ in SEPARATION_METRICS:
+                row[metric] = (
+                    value if metric == "ua_cond_est_pct" else float(seed)
+                )
+            rows.append(row)
+    sep = separability(pd.DataFrame(rows))
+    claims = separation_claims(sep).set_index("metric")
+    ua_rows = sep.loc[sep["metric"] == "ua_cond_est_pct"].set_index("case")
+
+    assert bool(ua_rows.loc["ncg_dalton", "separable"])
+    assert bool(ua_rows.loc["ncg_blanketed", "separable"])
+    assert not bool(ua_rows.loc["ncg_dalton_ua_matched", "separable"])
+    assert not bool(
+        claims.loc["ua_cond_est_pct", "separable_vs_all_ncg_variants"]
+    )
 
 
 def test_seed_ranges_and_claims_match_distribution(
@@ -199,6 +241,7 @@ def test_generated_separation_report_matches_claims(
     for metric in claimed:
         assert sep.loc[sep["metric"] == metric, "separable"].all()
     assert "discharge_pressure_delta_kpa" not in claimed
+    assert "ua_cond_est_pct" not in claimed
 
     for heading in (
         "## Second fault: non-condensable gas vs condenser fouling",
