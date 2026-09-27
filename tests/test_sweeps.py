@@ -9,6 +9,7 @@ from chiller_sim.sweeps import (
     BEGIN_MARKER,
     CASE_INDEX,
     CW_POINTS_C,
+    CW_SENSITIVITY,
     LOAD_ELASTICITY,
     LOAD_POINTS_KW,
     NCG_CASES,
@@ -19,6 +20,7 @@ from chiller_sim.sweeps import (
     SWEEP_CASES,
     SWEEP_SEEDS,
     collapse_bands,
+    collapse_kind,
     run_sweeps,
     separation_claims,
     sweep_markdown,
@@ -210,6 +212,105 @@ def test_claims_accept_universally_disjoint_consistent_direction() -> None:
     ] == ()
 
 
+def _collapse_kind_frame(
+    *,
+    n1_separable: bool,
+    n1_direction: float,
+    n1_expected_direction: float,
+) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "signature": LOAD_ELASTICITY,
+                "sweep": "load",
+                "case": "ncg_dalton",
+                "n": 0.0,
+                "point_index": np.nan,
+                "separable": True,
+                "direction": 1.0,
+                "expected_direction": 1.0,
+            },
+            {
+                "signature": LOAD_ELASTICITY,
+                "sweep": "load",
+                "case": "ncg_dalton",
+                "n": 1.0,
+                "point_index": np.nan,
+                "separable": n1_separable,
+                "direction": n1_direction,
+                "expected_direction": n1_expected_direction,
+            },
+        ]
+    )
+
+
+def test_collapse_kind_reports_no_band() -> None:
+    separation = _collapse_kind_frame(
+        n1_separable=True,
+        n1_direction=1.0,
+        n1_expected_direction=1.0,
+    )
+    assert (
+        collapse_kind(separation, LOAD_ELASTICITY, "load", "ncg_dalton")
+        == "none"
+    )
+
+
+def test_collapse_kind_distinguishes_finite_sample_overlap() -> None:
+    separation = _collapse_kind_frame(
+        n1_separable=False,
+        n1_direction=1.0,
+        n1_expected_direction=1.0,
+    )
+    assert (
+        collapse_kind(separation, LOAD_ELASTICITY, "load", "ncg_dalton")
+        == "finite-sample overlap only"
+    )
+
+
+def test_collapse_kind_reports_expected_value_crossing() -> None:
+    separation = _collapse_kind_frame(
+        n1_separable=False,
+        n1_direction=1.0,
+        n1_expected_direction=0.0,
+    )
+    assert (
+        collapse_kind(separation, LOAD_ELASTICITY, "load", "ncg_dalton")
+        == "expected-value crossing"
+    )
+
+
+def test_expected_approach_load_collapses_are_crossings(sweep_results) -> None:
+    for case in NCG_CASES:
+        assert (
+            collapse_kind(
+                sweep_results.separation,
+                LOAD_ELASTICITY,
+                "load",
+                case,
+            )
+            == "expected-value crossing"
+        )
+
+
+def test_expected_subcooling_stays_positive_for_nonzero_ncg(
+    sweep_results,
+) -> None:
+    expected = sweep_results.separation.loc[
+        (sweep_results.separation["signature"] == SUBCOOLING_EXCESS)
+        & sweep_results.separation["case"].isin(NCG_CASES)
+    ]
+    assert expected["expected_value"].gt(0.0).all()
+    assert expected["ncg_partial_pressure_kpa"].gt(0.0).all()
+
+    blanketing_only = sweep_results.separation.loc[
+        (sweep_results.separation["signature"] == SUBCOOLING_EXCESS)
+        & (sweep_results.separation["case"] == "ncg_blanketing_only")
+    ]
+    assert blanketing_only["expected_value"].abs().lt(1e-9).all()
+    assert blanketing_only["ncg_partial_pressure_kpa"].eq(0.0).all()
+
+
 def test_nonpositive_approach_excess_produces_nan_elasticity() -> None:
     points = pd.DataFrame(
         {
@@ -307,6 +408,11 @@ def test_generated_report_block_and_artifacts_match(sweep_results) -> None:
         "Claimed separators (every sweep, every n, every NCG case with nonzero partial pressure): ",
         maxsplit=1,
     )[1].split(".", maxsplit=1)[0]
+    assert SUBCOOLING_EXCESS not in claim_line
+    assert (
+        "Expected-value (noise-free) separators: "
+        f"{SUBCOOLING_EXCESS}."
+    ) in generated
     if not sweep_results.claims.set_index("signature").loc[
         LOAD_ELASTICITY, "claimed"
     ]:

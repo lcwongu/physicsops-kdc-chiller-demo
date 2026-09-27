@@ -58,6 +58,8 @@ END_MARKER = "<!-- END GENERATED: sweep-separation -->"
 class SweepResults:
     point_metrics: pd.DataFrame
     signatures: pd.DataFrame
+    expected_point_metrics: pd.DataFrame
+    expected_signatures: pd.DataFrame
     separation: pd.DataFrame
     claims: pd.DataFrame
     calibration: pd.DataFrame
@@ -268,6 +270,103 @@ def _scenario_specs(
                 _Scenario(case, exponent, exponent_index, state)
             )
     return scenarios
+
+
+def _derive_noise_free_state(
+    state: OperatingPoint,
+    cooling_load_kw: np.ndarray,
+    cw_supply_setpoint: np.ndarray,
+    config: SimulationConfig,
+) -> pd.DataFrame:
+    plr = cooling_load_kw / config.rated_capacity_kw
+    subcooling = np.clip(
+        config.cond_subcooling_c
+        + config.subcooling_plr_gain_c * (plr - 0.65),
+        0.2,
+        None,
+    )
+    sensors = pd.DataFrame(
+        {
+            "outdoor_wet_bulb_c": (
+                cw_supply_setpoint - config.tower_approach_c
+            ),
+            "chw_supply_temp_c": np.full(
+                len(cooling_load_kw), config.chw_supply_setpoint_c
+            ),
+            "chw_return_temp_c": state.chw_return_c,
+            "cw_supply_temp_c": cw_supply_setpoint,
+            "cw_return_temp_c": state.cw_return_c,
+            "chw_flow_kg_s": np.full(
+                len(cooling_load_kw), config.chw_flow_kg_s
+            ),
+            "cw_flow_kg_s": np.full(
+                len(cooling_load_kw), config.cw_flow_kg_s
+            ),
+            "compressor_power_kw": state.compressor_power_kw,
+            "suction_pressure_kpa": state.suction_pressure_kpa,
+            "discharge_pressure_kpa": state.discharge_pressure_kpa,
+            "cond_liquid_temp_c": state.condenser_temp_c - subcooling,
+        }
+    )
+    return derive_signals(sensors, config)
+
+
+def _expected_sweep_point_metrics(
+    sweep: str,
+    points: np.ndarray,
+    config: SimulationConfig,
+    pressures: dict[str, float],
+    references: dict[str, float],
+) -> pd.DataFrame:
+    if sweep == "load":
+        load = points
+        cw_supply = np.full(len(points), REFERENCE_CW_SUPPLY_C)
+    else:
+        load = np.full(len(points), REFERENCE_LOAD_KW)
+        cw_supply = points
+    scenarios = _scenario_specs(
+        load, cw_supply, config, pressures, references
+    )
+    healthy = _derive_noise_free_state(
+        scenarios[0].operating_point, load, cw_supply, config
+    )
+    rows = []
+    for scenario in scenarios[1:]:
+        faulty = _derive_noise_free_state(
+            scenario.operating_point, load, cw_supply, config
+        )
+        for point_index, point_value in enumerate(points):
+            rows.append(
+                {
+                    "sweep": sweep,
+                    "case": scenario.case,
+                    "n": scenario.exponent,
+                    "point_index": point_index,
+                    "point_value": point_value,
+                    "expected_approach_excess_c": (
+                        faulty["condenser_approach_c"].iloc[point_index]
+                        - healthy["condenser_approach_c"].iloc[point_index]
+                    ),
+                    "expected_apparent_subcooling_excess_c": (
+                        faulty["apparent_subcooling_c"].iloc[point_index]
+                        - healthy["apparent_subcooling_c"].iloc[point_index]
+                    ),
+                    "expected_discharge_pressure_excess_kpa": (
+                        faulty["discharge_pressure_kpa"].iloc[point_index]
+                        - healthy["discharge_pressure_kpa"].iloc[point_index]
+                    ),
+                    "expected_condenser_heat_kw": faulty[
+                        "condenser_heat_kw"
+                    ].iloc[point_index],
+                    "expected_cw_supply_mean": faulty[
+                        "cw_supply_temp_c"
+                    ].iloc[point_index],
+                    "ncg_partial_pressure_kpa": scenario.operating_point.ncg_partial_pressure_kpa[
+                        point_index
+                    ],
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 def _draw_sensor_arrays(
@@ -557,6 +656,53 @@ def _signature_distributions(point_metrics: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _expected_signature_distributions(
+    expected_point_metrics: pd.DataFrame,
+) -> pd.DataFrame:
+    rows = []
+    for (sweep, case, exponent), group in expected_point_metrics.groupby(
+        ["sweep", "case", "n"], sort=False
+    ):
+        approach = group["expected_approach_excess_c"].to_numpy(dtype=float)
+        if sweep == "load":
+            heat = group["expected_condenser_heat_kw"].to_numpy(dtype=float)
+            if np.isfinite(approach).all() and np.isfinite(heat).all() and np.all(
+                approach > 0.0
+            ):
+                value = _ols_slope(np.log(heat), np.log(approach))
+            else:
+                value = np.nan
+            signature = LOAD_ELASTICITY
+        else:
+            supply = group["expected_cw_supply_mean"].to_numpy(dtype=float)
+            if np.isfinite(approach).all() and np.isfinite(supply).all():
+                centered_supply = supply - REFERENCE_CW_SUPPLY_C
+                design = np.column_stack(
+                    [np.ones(len(centered_supply)), centered_supply]
+                )
+                coefficients, *_ = np.linalg.lstsq(
+                    design, approach, rcond=None
+                )
+                value = (
+                    float(100.0 * coefficients[1] / coefficients[0])
+                    if coefficients[0] != 0.0
+                    else np.nan
+                )
+            else:
+                value = np.nan
+            signature = CW_SENSITIVITY
+        rows.append(
+            {
+                "signature": signature,
+                "sweep": sweep,
+                "case": case,
+                "n": exponent,
+                "value": value,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def _separation_rows(
     point_metrics: pd.DataFrame, signatures: pd.DataFrame
 ) -> pd.DataFrame:
@@ -663,6 +809,83 @@ def _separation_rows(
     return pd.DataFrame(rows)
 
 
+def _add_expected_values(
+    separation: pd.DataFrame,
+    expected_point_metrics: pd.DataFrame,
+    expected_signatures: pd.DataFrame,
+) -> pd.DataFrame:
+    expected_points = {
+        (row.sweep, row.case, float(row.n), int(row.point_index)): row
+        for row in expected_point_metrics.itertuples(index=False)
+    }
+    expected_signature_values = {
+        (row.signature, row.sweep, row.case, float(row.n)): float(row.value)
+        for row in expected_signatures.itertuples(index=False)
+    }
+    rows = []
+    for row in separation.itertuples(index=False):
+        if row.signature == SUBCOOLING_EXCESS:
+            point_key = (
+                row.sweep,
+                row.case,
+                float(row.n),
+                int(row.point_index),
+            )
+            reference_key = (
+                row.sweep,
+                "condenser_fouling",
+                0.0,
+                int(row.point_index),
+            )
+            case_expected = expected_points[point_key]
+            reference_expected = expected_points[reference_key]
+            expected_value = float(
+                case_expected.expected_apparent_subcooling_excess_c
+            )
+            expected_ref = float(
+                reference_expected.expected_apparent_subcooling_excess_c
+            )
+            ncg_pressure = float(
+                case_expected.ncg_partial_pressure_kpa
+            )
+        else:
+            expected_value = expected_signature_values[
+                (
+                    row.signature,
+                    row.sweep,
+                    row.case,
+                    float(row.n),
+                )
+            ]
+            expected_ref = expected_signature_values[
+                (
+                    row.signature,
+                    row.sweep,
+                    "condenser_fouling",
+                    0.0,
+                )
+            ]
+            ncg_pressure = np.nan
+        if abs(expected_value) < 1e-12:
+            expected_value = 0.0
+        if abs(expected_ref) < 1e-12:
+            expected_ref = 0.0
+        rows.append(
+            {
+                "expected_value": expected_value,
+                "expected_ref": expected_ref,
+                "expected_direction": (
+                    float(np.sign(expected_value - expected_ref))
+                    if np.isfinite(expected_value) and np.isfinite(expected_ref)
+                    else np.nan
+                ),
+                "ncg_partial_pressure_kpa": ncg_pressure,
+            }
+        )
+    expected = pd.DataFrame(rows, index=separation.index)
+    return pd.concat([separation, expected], axis=1)
+
+
 def collapse_bands(separation: pd.DataFrame) -> dict[tuple[str, str, str], tuple[float, ...]]:
     bands = {}
     keys = separation[["signature", "sweep", "case"]].drop_duplicates()
@@ -699,6 +922,46 @@ def collapse_bands(separation: pd.DataFrame) -> dict[tuple[str, str, str], tuple
                 collapsed.append(float(exponent))
         bands[(signature, sweep, case)] = tuple(collapsed)
     return bands
+
+
+def collapse_kind(
+    separation: pd.DataFrame,
+    signature: str,
+    sweep: str,
+    case: str,
+) -> str:
+    band = collapse_bands(separation).get((signature, sweep, case), ())
+    if not band:
+        return "none"
+
+    rows = separation.loc[
+        (separation["signature"] == signature)
+        & (separation["sweep"] == sweep)
+        & (separation["case"] == case)
+    ]
+    reference_directions = {
+        ("aggregate" if pd.isna(point) else point): direction
+        for point, direction in zip(
+            rows.loc[rows["n"] == 0.0, "point_index"].tolist(),
+            rows.loc[rows["n"] == 0.0, "expected_direction"].tolist(),
+        )
+    }
+    for exponent in band:
+        exponent_rows = rows.loc[rows["n"] == exponent]
+        for point, direction in zip(
+            exponent_rows["point_index"].tolist(),
+            exponent_rows["expected_direction"].tolist(),
+        ):
+            point_key = "aggregate" if pd.isna(point) else point
+            reference_direction = reference_directions.get(point_key, np.nan)
+            if (
+                not np.isfinite(direction)
+                or direction == 0.0
+                or not np.isfinite(reference_direction)
+                or direction != reference_direction
+            ):
+                return "expected-value crossing"
+    return "finite-sample overlap only"
 
 
 def separation_claims(separation: pd.DataFrame) -> pd.DataFrame:
@@ -739,6 +1002,83 @@ def _fmt_exponents(values: tuple[float, ...]) -> str:
     return ", ".join(f"{value:.1f}" for value in values) if values else "none"
 
 
+def _expected_value_separators(results: SweepResults) -> list[str]:
+    unclaimed = results.claims.loc[
+        ~results.claims["claimed"], "signature"
+    ].tolist()
+    separators = []
+    for signature in unclaimed:
+        applies_to = SIGNATURE_SPECS[signature][0]
+        sweeps = ("load", "cw") if applies_to == "both" else (applies_to,)
+        kinds = []
+        positive_everywhere = True
+        for case in NCG_CASES:
+            expected_points = results.expected_point_metrics.loc[
+                (results.expected_point_metrics["case"] == case)
+                & results.expected_point_metrics["n"].isin(NCG_EXPONENTS)
+            ]
+            if not expected_points["ncg_partial_pressure_kpa"].gt(0.0).all():
+                positive_everywhere = False
+            for sweep in sweeps:
+                rows = results.separation.loc[
+                    (results.separation["signature"] == signature)
+                    & (results.separation["sweep"] == sweep)
+                    & (results.separation["case"] == case)
+                ]
+                if rows.empty or not rows["expected_value"].gt(0.0).all():
+                    positive_everywhere = False
+                kinds.append(collapse_kind(results.separation, signature, sweep, case))
+        if (
+            positive_everywhere
+            and "finite-sample overlap only" in kinds
+            and all(kind in {"none", "finite-sample overlap only"} for kind in kinds)
+        ):
+            separators.append(signature)
+    return separators
+
+
+def _minimum_expected_subcooling_lines(results: SweepResults) -> list[str]:
+    lines = []
+    for case in NCG_CASES:
+        rows = results.separation.loc[
+            (results.separation["signature"] == SUBCOOLING_EXCESS)
+            & (results.separation["case"] == case)
+        ]
+        row = rows.loc[rows["expected_value"].idxmin()]
+        if row["sweep"] == "load":
+            location = f"{row['point_value']:.0f} kW"
+        else:
+            location = f"{row['point_value']:.0f} °C CW inlet"
+        lines.append(
+            f"Minimum expected apparent-subcooling excess, {case}: "
+            f"{row['expected_value']:.3f} K at {location}, n={row['n']:.1f}; "
+            f"p_ncg={row['ncg_partial_pressure_kpa']:.3f} kPa."
+        )
+    overlap = results.separation.loc[
+        (results.separation["signature"] == SUBCOOLING_EXCESS)
+        & (results.separation["sweep"] == "cw")
+        & (results.separation["case"] == "ncg_blanketed")
+        & (results.separation["point_value"] == CW_POINTS_C[0])
+        & ~results.separation["separable"].astype(bool)
+    ]
+    if not overlap.empty:
+        exponents = sorted(overlap["n"].unique())
+        ref_min = float(overlap["ref_min"].min())
+        ref_max = float(overlap["ref_max"].max())
+        expected_min = float(overlap["expected_value"].min())
+        expected_max = float(overlap["expected_value"].max())
+        pressure_min = float(overlap["ncg_partial_pressure_kpa"].min())
+        pressure_max = float(overlap["ncg_partial_pressure_kpa"].max())
+        lines.append(
+            "Blanketed CW finite-sample overlap at "
+            f"{CW_POINTS_C[0]:.0f} °C, n={_fmt_exponents(tuple(exponents))}: "
+            f"expected excess {expected_min:.3f}–{expected_max:.3f} K; "
+            f"p_ncg={pressure_min:.3f}–{pressure_max:.3f} kPa; "
+            f"fouling 20-seed range {ref_min:.3f}–{ref_max:.3f} K."
+        )
+    return lines
+
+
 def sweep_markdown(results: SweepResults) -> str:
     calibration_lines = [
         "| case | condenser UA (kW/K) | p_ncg at reference (kPa) | "
@@ -754,8 +1094,8 @@ def sweep_markdown(results: SweepResults) -> str:
 
     bands = collapse_bands(results.separation)
     separation_lines = [
-        "| signature | sweep | case | separable at n=0 | collapse band n |",
-        "| --- | --- | --- |:---:| --- |",
+        "| signature | sweep | case | separable at n=0 | collapse band n | collapse kind |",
+        "| --- | --- | --- |:---:| --- | --- |",
     ]
     keys = (
         results.separation[
@@ -775,7 +1115,8 @@ def sweep_markdown(results: SweepResults) -> str:
         separation_lines.append(
             f"| {signature} | {sweep} | {case} | "
             f"{'yes' if n0_separable else 'no'} | "
-            f"{_fmt_exponents(bands[(signature, sweep, case)])} |"
+            f"{_fmt_exponents(bands[(signature, sweep, case)])} | "
+            f"{collapse_kind(results.separation, signature, sweep, case)} |"
         )
 
     claimed = results.claims.loc[
@@ -790,6 +1131,7 @@ def sweep_markdown(results: SweepResults) -> str:
             & results.signatures["value"].isna()
         ].shape[0]
     )
+    expected_value_separators = _expected_value_separators(results)
     return "\n".join(
         [
             "#### Calibration at the reference operating point",
@@ -809,6 +1151,16 @@ def sweep_markdown(results: SweepResults) -> str:
             "Not claimed (collapses or reverses in at least one sweep): "
             + (", ".join(not_claimed) if not_claimed else "none")
             + ".",
+            "",
+            "Expected-value (noise-free) separators: "
+            + (
+                ", ".join(expected_value_separators)
+                if expected_value_separators
+                else "none"
+            )
+            + ".",
+            "",
+            *_minimum_expected_subcooling_lines(results),
             "",
             "ncg_blanketing_only (fouling by construction): no separator claimed.",
         ]
@@ -845,11 +1197,37 @@ def run_sweeps(config: SimulationConfig = SimulationConfig()) -> SweepResults:
     )
     point_metrics = pd.concat([load_points, cw_points], ignore_index=True)
     signatures = _signature_distributions(point_metrics)
-    separation = _separation_rows(point_metrics, signatures)
+    expected_load_points = _expected_sweep_point_metrics(
+        "load",
+        LOAD_POINTS_KW,
+        config,
+        pressures,
+        references,
+    )
+    expected_cw_points = _expected_sweep_point_metrics(
+        "cw",
+        CW_POINTS_C,
+        config,
+        pressures,
+        references,
+    )
+    expected_point_metrics = pd.concat(
+        [expected_load_points, expected_cw_points], ignore_index=True
+    )
+    expected_signatures = _expected_signature_distributions(
+        expected_point_metrics
+    )
+    separation = _add_expected_values(
+        _separation_rows(point_metrics, signatures),
+        expected_point_metrics,
+        expected_signatures,
+    )
     claims = separation_claims(separation)
     return SweepResults(
         point_metrics=point_metrics,
         signatures=signatures,
+        expected_point_metrics=expected_point_metrics,
+        expected_signatures=expected_signatures,
         separation=separation,
         claims=claims,
         calibration=calibration,

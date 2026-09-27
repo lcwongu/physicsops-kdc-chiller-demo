@@ -352,26 +352,32 @@ all fault cases within each seed and sweep.
 
 #### Separation and collapse bands
 
-| signature | sweep | case | separable at n=0 | collapse band n |
-| --- | --- | --- |:---:| --- |
-| apparent_subcooling_excess_c | cw | ncg_blanketed | yes | 9.0, 9.5, 10.0 |
-| apparent_subcooling_excess_c | cw | ncg_blanketing_only | no | 0.0 |
-| apparent_subcooling_excess_c | cw | ncg_dalton | yes | none |
-| apparent_subcooling_excess_c | load | ncg_blanketed | yes | none |
-| apparent_subcooling_excess_c | load | ncg_blanketing_only | no | 0.0 |
-| apparent_subcooling_excess_c | load | ncg_dalton | yes | none |
-| approach_cw_sensitivity_pct_per_k | cw | ncg_blanketed | yes | 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0 |
-| approach_cw_sensitivity_pct_per_k | cw | ncg_blanketing_only | no | 0.0 |
-| approach_cw_sensitivity_pct_per_k | cw | ncg_dalton | yes | 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0 |
-| approach_load_elasticity | load | ncg_blanketed | yes | 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0 |
-| approach_load_elasticity | load | ncg_blanketing_only | no | 0.0 |
-| approach_load_elasticity | load | ncg_dalton | yes | 7.5, 8.0, 8.5, 9.0, 9.5, 10.0 |
+| signature | sweep | case | separable at n=0 | collapse band n | collapse kind |
+| --- | --- | --- |:---:| --- | --- |
+| apparent_subcooling_excess_c | cw | ncg_blanketed | yes | 9.0, 9.5, 10.0 | finite-sample overlap only |
+| apparent_subcooling_excess_c | cw | ncg_blanketing_only | no | 0.0 | expected-value crossing |
+| apparent_subcooling_excess_c | cw | ncg_dalton | yes | none | none |
+| apparent_subcooling_excess_c | load | ncg_blanketed | yes | none | none |
+| apparent_subcooling_excess_c | load | ncg_blanketing_only | no | 0.0 | expected-value crossing |
+| apparent_subcooling_excess_c | load | ncg_dalton | yes | none | none |
+| approach_cw_sensitivity_pct_per_k | cw | ncg_blanketed | yes | 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0 | expected-value crossing |
+| approach_cw_sensitivity_pct_per_k | cw | ncg_blanketing_only | no | 0.0 | finite-sample overlap only |
+| approach_cw_sensitivity_pct_per_k | cw | ncg_dalton | yes | 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0 | expected-value crossing |
+| approach_load_elasticity | load | ncg_blanketed | yes | 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0 | expected-value crossing |
+| approach_load_elasticity | load | ncg_blanketing_only | no | 0.0 | expected-value crossing |
+| approach_load_elasticity | load | ncg_dalton | yes | 7.5, 8.0, 8.5, 9.0, 9.5, 10.0 | expected-value crossing |
 
 Load-elasticity NaN rows (nonpositive approach excess): 0.
 
 Claimed separators (every sweep, every n, every NCG case with nonzero partial pressure): none.
 
 Not claimed (collapses or reverses in at least one sweep): approach_load_elasticity, approach_cw_sensitivity_pct_per_k, apparent_subcooling_excess_c.
+
+Expected-value (noise-free) separators: apparent_subcooling_excess_c.
+
+Minimum expected apparent-subcooling excess, ncg_dalton: 0.739 K at 22 °C CW inlet, n=10.0; p_ncg=15.803 kPa.
+Minimum expected apparent-subcooling excess, ncg_blanketed: 0.496 K at 22 °C CW inlet, n=10.0; p_ncg=10.860 kPa.
+Blanketed CW finite-sample overlap at 22 °C, n=9.0, 9.5, 10.0: expected excess 0.496–0.594 K; p_ncg=10.860–13.028 kPa; fouling 20-seed range -0.282–0.333 K.
 
 ncg_blanketing_only (fouling by construction): no separator claimed.
 <!-- END GENERATED: sweep-separation -->
@@ -382,22 +388,33 @@ At n=0, the generated table reports separation for approach-load elasticity
 and apparent subcooling in their applicable sweeps for both nonzero-partial-
 pressure NCG cases. The load-elasticity collapse band begins at n=7.5 for
 Dalton NCG and n=6.0 for blanketed NCG; CW sensitivity collapses from n=1.0
-for both cases. These collapse locations follow the stated prediction.
+for both cases. The generated collapse kinds identify those approach
+collapses as expected-value crossings, consistent with the stated prediction.
 
-Apparent subcooling does not survive every exponent in every sweep: its CW
-collapse band for blanketed NCG is n=9.0, 9.5, and 10.0. The generated claim
-line is therefore empty under the all-sweeps/all-exponents rule, contrary to
-the prediction that apparent subcooling is the only separator. The
+The prediction that apparent subcooling survives every n fails under the
+finite-sample rule: its CW collapse band for blanketed NCG is n=9.0, 9.5, and
+10.0. The generated collapse kind labels this as finite-sample overlap only;
+the expected-value separator line still includes apparent subcooling. The
 load-elasticity calculation produced no NaN rows.
 
 ### What still separates fouling from NCG, and what does not
 
-No signature is claimed across both sweep types, all tested exponents, and
-both nonzero-partial-pressure NCG cases. Apparent subcooling separates for
-Dalton NCG throughout the tested grid and for blanketed NCG except at the
-listed high-exponent CW points. Approach-load elasticity separates at n=0
-but collapses at higher exponents, while CW sensitivity collapses from n=1.
-PR 2's `approach_load_slope_change` claim is withdrawn as an unconditional
-separator: its operating-point analogue is conditional on n, which is not
-observable from the current sensors. The blanketing-only NCG case remains
-ambiguous because it is fouling by construction.
+No signature passes the finite-sample claim rule. The approach-vs-load and
+CW-inlet signatures fail by crossing fouling in expectation. Their
+load-elasticity collapse bands begin at n=7.5 for Dalton NCG and n=6.0 for
+blanketed NCG; the CW-sensitivity collapse bands begin at n=1.0 for both.
+These signatures are separators only below their collapse values, which the
+current sensors cannot observe. PR 2's `approach_load_slope_change` is
+withdrawn as an unconditional separator.
+
+Apparent subcooling fails only by finite-sample overlap at the 22 °C
+blanketed points for n≥9. The generated values show p_ncg falling to
+10.860–13.028 kPa and expected excess falling to 0.496–0.594 K, against a
+fouling 20-seed range of −0.282–+0.333 K. Its expected excess remains
+positive at every point, exponent, sweep, and nonzero-p_ncg NCG case, so it
+remains the only physically identifiable separator. It is detection-limited
+when p_ncg is small; more averaging or a lower-noise liquid-temperature
+sensor would restore separation. This is a sensitivity condition, not a
+claim under the finite-sample rule.
+
+Blanketing-only NCG remains inseparable by construction.
