@@ -10,6 +10,7 @@ from chiller_sim import (
     generate_telemetry,
     save_telemetry,
 )
+from chiller_sim.diagnostics import derive_signals
 
 
 @pytest.fixture(scope="module")
@@ -86,11 +87,11 @@ def _hour_matched_delta(
     return float((hourly_degraded - hourly_healthy).mean())
 
 
-def test_degradation_direction(default_df: pd.DataFrame) -> None:
+def _assert_degradation_direction(df: pd.DataFrame) -> None:
     fault_start = pd.Timestamp("2025-07-04 00:00")
-    healthy = default_df["timestamp"] < fault_start
-    degraded = default_df["timestamp"] >= (
-        default_df["timestamp"].iloc[-1] - pd.Timedelta(days=1)
+    healthy = df["timestamp"] < fault_start
+    degraded = df["timestamp"] >= (
+        df["timestamp"].iloc[-1] - pd.Timedelta(days=1)
     )
     signals = [
         "discharge_pressure_kpa",
@@ -102,13 +103,13 @@ def test_degradation_direction(default_df: pd.DataFrame) -> None:
         "cooling_load_kw",
     ]
     deltas = {
-        column: _hour_matched_delta(default_df, column, healthy, degraded)
+        column: _hour_matched_delta(df, column, healthy, degraded)
         for column in signals
     }
     healthy_means = {
         column: float(
-            default_df.loc[healthy]
-            .groupby(default_df.loc[healthy, "timestamp"].dt.hour)[column]
+            df.loc[healthy]
+            .groupby(df.loc[healthy, "timestamp"].dt.hour)[column]
             .mean()
             .mean()
         )
@@ -122,6 +123,15 @@ def test_degradation_direction(default_df: pd.DataFrame) -> None:
     assert abs(deltas["suction_pressure_kpa"]) < 10.0
     assert abs(deltas["chw_supply_temp_c"]) < 0.1
     assert abs(deltas["cooling_load_kw"] / healthy_means["cooling_load_kw"]) < 0.03
+
+
+def test_degradation_direction(default_df: pd.DataFrame) -> None:
+    _assert_degradation_direction(default_df)
+
+
+@pytest.mark.parametrize("seed", range(50))
+def test_degradation_direction_across_seeds(seed: int) -> None:
+    _assert_degradation_direction(generate_telemetry(SimulationConfig(seed=seed)))
 
 
 def test_physical_coherence(default_df: pd.DataFrame) -> None:
