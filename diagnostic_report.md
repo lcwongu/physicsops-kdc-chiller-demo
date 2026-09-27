@@ -98,14 +98,41 @@ The original single-seed direction test used CW return temperature and a tight
 cooling-load tolerance. CW return was confounded by wet-bulb AR(1) drift
 between the comparison windows (about ±0.19 °C), larger than the fault's own
 approximately `+0.07 °C` CW-range effect. The exogenous cooling-load AR(1)
-variation also moved the window mean independently of the fault. A 50-seed
-test exposed that weakness; the failing excerpt and recovery are recorded
-after the regression run.
+variation also moved the window mean independently of the fault. The 50-seed
+regression produced this failure summary:
+
+```text
+FAILED tests/test_telemetry.py::test_degradation_direction_across_seeds[3] - ...
+FAILED tests/test_telemetry.py::test_degradation_direction_across_seeds[4] - ...
+FAILED tests/test_telemetry.py::test_degradation_direction_across_seeds[12]
+FAILED tests/test_telemetry.py::test_degradation_direction_across_seeds[14]
+FAILED tests/test_telemetry.py::test_degradation_direction_across_seeds[15]
+FAILED tests/test_telemetry.py::test_degradation_direction_across_seeds[21]
+FAILED tests/test_telemetry.py::test_degradation_direction_across_seeds[24]
+FAILED tests/test_telemetry.py::test_degradation_direction_across_seeds[29]
+FAILED tests/test_telemetry.py::test_degradation_direction_across_seeds[30]
+FAILED tests/test_telemetry.py::test_degradation_direction_across_seeds[34]
+FAILED tests/test_telemetry.py::test_degradation_direction_across_seeds[35]
+FAILED tests/test_telemetry.py::test_degradation_direction_across_seeds[36]
+FAILED tests/test_telemetry.py::test_degradation_direction_across_seeds[38]
+FAILED tests/test_telemetry.py::test_degradation_direction_across_seeds[39]
+FAILED tests/test_telemetry.py::test_degradation_direction_across_seeds[41]
+FAILED tests/test_telemetry.py::test_degradation_direction_across_seeds[43]
+FAILED tests/test_telemetry.py::test_degradation_direction_across_seeds[44]
+>       assert deltas["cw_return_temp_c"] > 0.0
+E       assert -0.22050713544261713 > 0.0
+
+17 failed, 39 passed in 1.70s
+```
+
+The cooling-load difference is exogenous AR(1) variation, with a 1.6% standard
+deviation and a 4.7% maximum over the verified 200-seed set.
 
 Recovery: retain the pressure, power, COP, suction, and chilled-water checks;
 use condenser approach and sensor-only UA loss instead of CW return as the
 fault-specific signals, and allow a 6% cooling-load difference to accommodate
-the documented exogenous noise.
+the documented exogenous noise. The telemetry suite passed after this change:
+`56 passed in 1.79s`.
 
 ## Reproduce
 

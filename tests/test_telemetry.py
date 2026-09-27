@@ -119,10 +119,26 @@ def _assert_degradation_direction(df: pd.DataFrame) -> None:
     assert deltas["discharge_pressure_kpa"] >= 40.0
     assert deltas["compressor_power_kw"] / healthy_means["compressor_power_kw"] >= 0.05
     assert deltas["cop"] / healthy_means["cop"] <= -0.05
-    assert deltas["cw_return_temp_c"] > 0.0
+    derived = derive_signals(df)
+    approach_delta = _hour_matched_delta(
+        derived, "condenser_approach_c", healthy, degraded
+    )
+    ua_delta = _hour_matched_delta(
+        derived, "ua_cond_est_kw_per_k", healthy, degraded
+    )
+    healthy_ua_mean = float(
+        derived.loc[healthy]
+        .groupby(derived.loc[healthy, "timestamp"].dt.hour)[
+            "ua_cond_est_kw_per_k"
+        ]
+        .mean()
+        .mean()
+    )
+    assert approach_delta >= 1.0
+    assert ua_delta / healthy_ua_mean <= -0.25
     assert abs(deltas["suction_pressure_kpa"]) < 10.0
     assert abs(deltas["chw_supply_temp_c"]) < 0.1
-    assert abs(deltas["cooling_load_kw"] / healthy_means["cooling_load_kw"]) < 0.03
+    assert abs(deltas["cooling_load_kw"] / healthy_means["cooling_load_kw"]) < 0.06
 
 
 def test_degradation_direction(default_df: pd.DataFrame) -> None:
