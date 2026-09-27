@@ -1,9 +1,10 @@
 # Synthetic Chiller Telemetry
 
 This Python-only project generates reproducible, five-minute chiller telemetry
-for a seven-day period. It simulates a water-cooled chiller with a gradual
-condenser-fouling fault. The generator uses NumPy and pandas; pytest exercises
-its API, schedule, physics, and committed CSV.
+for a seven-day period. It simulates a water-cooled chiller with either gradual
+condenser fouling or non-condensable gas in the condenser. The generator uses
+NumPy and pandas; pytest exercises its API, schedule, physics, and committed
+CSVs.
 
 ## Generate and test
 
@@ -12,6 +13,7 @@ From the repository root:
 ```bash
 pip install -r requirements.txt
 python -m chiller_sim --seed 42 --output data/chiller_telemetry.csv
+python -m chiller_sim --seed 42 --fault non_condensables --output data/chiller_telemetry_ncg.csv
 python -m pytest -q
 ```
 
@@ -21,9 +23,13 @@ Install matplotlib with `pip install -r requirements.txt`, then run
 `python -m chiller_sim.report` to create `diagnostic_report.md`, the hourly
 diagnostic plots, and `reports/diagnostic_summary.csv`.
 
-The CLI defaults to seed `42` and `data/chiller_telemetry.csv`. Generation
-uses one `numpy.random.default_rng(seed)`. Random draws are deterministic and
-ordered as follows: one timestamp-ordered matrix of standard-normal
+The CLI defaults to seed `42`, fault `condenser_fouling`, and
+`data/chiller_telemetry.csv`. Select `--fault non_condensables` for the NCG
+case. The added condenser-liquid-temperature sensor uses its own
+`numpy.random.default_rng([seed, 1])`, so its AR(1) subcooling innovations and
+sensor-noise draws do not change the original sensor RNG stream. Original
+sensor generation uses one `numpy.random.default_rng(seed)`. Random draws are
+deterministic and ordered as follows: one timestamp-ordered matrix of standard-normal
 innovations, with cooling-load values then wet-bulb values in each row;
 measurement noise for wet bulb, chilled-water supply and return temperatures,
 condenser-water supply and return temperatures, chilled-water and
@@ -44,7 +50,7 @@ constant cooling-tower approach. It assumes water specific heat of
 `4.186 kJ/(kg·K)`, idealized ε-NTU heat exchangers, a fractional-Carnot
 compressor efficiency curve, and an R-134a saturation-pressure fit. No
 transient equipment dynamics beyond the two exogenous AR(1) disturbances and
-the specified fouling ramp are represented. Temperatures are in °C; absolute
+the specified fault ramp are represented. Temperatures are in °C; absolute
 temperatures in the compressor equation use °C + `273.15`.
 
 ## Model equations and constants
@@ -93,18 +99,39 @@ performs vectorized fixed-point updates for at most 50 iterations. It stops
 when the maximum absolute power update is below `1e-9 kW`; otherwise generation
 raises `RuntimeError`.
 
+**Non-condensables in the condenser**
+
+```text
+progress(t) = clip((t - t_fault)/(t_last - t_fault), 0, 1)
+p_ncg = p_ncg,max * progress
+UA_c = 200 * (1 - blanketing_loss * progress) kW/K
+P_discharge = P_sat(T_cond) + p_ncg
+T_lift = T_sat(P_discharge)
+COP_true = η * (T_evap + 273.15)/(T_lift - T_evap)
+```
+
+The model applies Dalton's law: NCG partial pressure adds to the refrigerant
+saturation pressure at the condenser heat-transfer temperature. The optional
+blanketing variant also reduces condenser UA. Fouling remains a separate,
+unchanged fault path.
+
 **Refrigerant pressures and measurements**
 
 The saturation-pressure approximation, in kPa absolute, is
 `P_sat(T) = exp(15.425 - 2662/(T + 273.15))`, with `T` in °C. It fits
 `292.8 kPa` at `0 °C` and `1016.6 kPa` at `40 °C`, and is within about 1% of
-tables over `0–50 °C`. Suction pressure is `P_sat(T_evap)` and discharge
-pressure is `P_sat(T_cond)`.
+tables over `0–50 °C`. Suction pressure is `P_sat(T_evap)`. For fouling,
+discharge pressure is `P_sat(T_cond)`; for NCG it includes the partial pressure
+shown above.
 
 Independent Gaussian sensor noise is added to the true values: `0.05 °C` to
-each of the five temperature sensors (four water temperatures and wet bulb),
-`0.3%` of nominal flow to each flow sensor, `1.0 kW` to compressor power, and
-`2.0 kPa` to each pressure sensor. Derived BMS values use measured sensors:
+each of the six temperature sensors (four water temperatures, wet bulb, and
+condenser liquid temperature), `0.3%` of nominal flow to each flow sensor,
+`1.0 kW` to compressor power, and `2.0 kPa` to each pressure sensor. The liquid
+sensor uses modeled subcooling
+`clip(2 + 1*(PLR - 0.65) + AR1(phi=0.95, sd=0.3 °C), 0.2, ∞)`, independent of
+the fault, followed by the same `0.05 °C` sensor noise. Derived BMS values use
+measured sensors:
 
 ```text
 cooling_load_kw = chw_flow_kg_s * cp *
@@ -116,15 +143,19 @@ cop = cooling_load_kw / compressor_power_kw
 
 The fault starts at `2025-07-04 00:00`. Condenser UA degrades linearly from
 healthy operation to a 50% loss at the final sample (`fault_severity = 0.5`,
-`condenser_ua_kw_per_k = 100`). Severity is zero before the fault start;
-`fault_active` switches to `1` at and after that time.
+`condenser_ua_kw_per_k = 100`). For NCG, `fault_severity` is the unit progress
+from 0 to 1; the default Dalton case reaches `89.2 kPa` partial pressure, and
+the blanketed variant reaches `58.8 kPa` with a 25% UA loss at full progress.
+The NCG default pressure is calibrated to match the fouling case's seed-42
+final-24-hour discharge-pressure rise. Severity/progress is zero before the
+fault start; `fault_active` switches to `1` at and after that time.
 
 Real condenser fouling usually builds over weeks to months. This demo
 compresses the ramp into four days so the fault is visible in a one-week
 dataset.
 
-`fault_severity`, `condenser_ua_kw_per_k`, and `fault_active` are ground-truth
-simulation labels, not sensor measurements.
+`fault_severity`, `condenser_ua_kw_per_k`, `ncg_partial_pressure_kpa`, and
+`fault_active` are ground-truth simulation labels, not sensor measurements.
 
 ## Output columns
 
@@ -141,10 +172,12 @@ simulation labels, not sensor measurements.
 | `compressor_power_kw` | kW | Measured compressor power |
 | `suction_pressure_kpa` | kPa abs | Measured refrigerant suction pressure |
 | `discharge_pressure_kpa` | kPa abs | Measured refrigerant discharge pressure |
+| `cond_liquid_temp_c` | °C | Measured condenser liquid refrigerant temperature |
 | `cooling_load_kw` | kW | Cooling load derived from measured chilled-water sensors |
 | `cop` | dimensionless | Cooling load divided by measured compressor power |
-| `fault_severity` | fraction | Ground-truth condenser-UA loss, from 0 to 0.5 |
+| `fault_severity` | fraction | Ground-truth fouling loss or NCG progress |
 | `condenser_ua_kw_per_k` | kW/K | Ground-truth condenser UA |
+| `ncg_partial_pressure_kpa` | kPa | Ground-truth NCG partial pressure |
 | `fault_active` | 0/1 | Ground-truth fault-start indicator |
 
 ## Expected fault signatures
@@ -157,3 +190,12 @@ approximately `+3.8 K` condenser temperature, `+90 kPa` discharge pressure,
 suction pressure should remain approximately unchanged. Exact sensor values
 include seeded noise, and comparisons across periods should account for the
 daily load and wet-bulb cycles.
+
+## Fault separation
+
+`derive_signals` adds apparent subcooling from discharge-pressure saturation
+temperature minus measured condenser liquid temperature. Run
+`python -m chiller_sim.separation` to compare 20 seeds of fouling, Dalton-only
+NCG, and blanketed NCG. It writes per-seed metrics, interval-overlap summaries,
+and plots under `reports/`. Separation is claimed only when a metric's
+observed fouling range is disjoint from both NCG ranges.

@@ -140,5 +140,119 @@ the documented exogenous noise. The telemetry suite passed after this change:
 pip install -r requirements.txt
 python -m chiller_sim --seed 42 --output data/chiller_telemetry.csv
 python -m chiller_sim.report
+python -m chiller_sim.separation
 python -m pytest -q
 ```
+
+## Second fault: non-condensable gas vs condenser fouling
+
+### Stated before implementation
+
+Before coding, I expected current-sensor level metrics to overlap once the
+discharge-pressure rise was matched. The load dependence of condenser approach
+was a candidate separator: partial-pressure-dominated NCG may add a roughly
+load-independent pressure offset, while fouling adds a load-proportional
+thermal resistance. This depends on the balance of partial pressure and tube
+blanketing, so the data decide whether it separates. The smallest physical
+separator considered was a condenser liquid-refrigerant temperature sensor,
+used to estimate apparent subcooling as saturation temperature at discharge
+pressure minus liquid temperature.
+
+### NCG model and calibration
+
+The NCG branch uses Dalton's law:
+
+```text
+progress = clip((t - t_fault)/(t_last - t_fault), 0, 1)
+p_ncg = p_ncg,max * progress
+UA_c = UA_c,healthy * (1 - blanketing_loss * progress)
+P_total = P_sat(T_cond) + p_ncg
+T_lift = T_sat(P_total)
+COP_true = η(PLR) * (T_evap + 273.15)/(T_lift - T_evap)
+```
+
+The Dalton-only case leaves condenser UA at its healthy value. The blanketed
+case adds a 25% UA loss at full progress. At seed 42, bisection calibrates each
+partial-pressure maximum so the final-24-hour, hour-matched discharge-pressure
+delta matches the fouling reference (`+86.167 kPa`): `P_A = 89.2 kPa` with no
+blanketing and `P_B = 58.8 kPa` with 25% blanketing. Both values are rounded to
+0.1 kPa.
+
+One condenser liquid-temperature sensor is added. Its modeled subcooling is
+`clip(2.0 + 1.0*(PLR - 0.65) + AR1(phi=0.95, sd=0.3 °C), 0.2, ∞)`, with
+independent measurement noise of `0.05 °C`. Its random stream is seeded
+separately from the original sensors. Apparent subcooling is
+`T_sat(P_discharge) - T_liquid`; the NCG partial pressure raises saturation
+temperature while the liquid temperature follows the modeled condenser
+temperature.
+
+### Schedule and shared baseline
+
+Both faults begin at `2025-07-04 00:00` and follow the same linear ramp through
+the final sample. The original fouling path and RNG stream are unchanged.
+Fouling and Dalton-only NCG use the same seed-driven exogenous trajectories;
+the independent liquid-sensor stream is also the same for both cases. Thus
+the sensor baseline before fault start is shared.
+
+### Generated separation results
+
+<!-- BEGIN GENERATED: fault-separation -->
+
+### Calibration and seed-42 comparison
+
+| case | max NCG partial pressure (kPa) | blanketing UA loss | discharge pressure Δ (kPa) | diagnose() mechanism |
+| --- | ---: | ---: | ---: | --- |
+| condenser_fouling | 0.000 | 0.000 | 86.167 | condenser heat-transfer degradation (waterside fouling/scaling) |
+| ncg_dalton | 89.200 | 0.000 | 86.124 | condenser heat-transfer degradation (waterside fouling/scaling) |
+| ncg_blanketed | 58.800 | 0.250 | 86.205 | condenser heat-transfer degradation (waterside fouling/scaling) |
+
+### Seed-sweep ranges and interval gaps
+
+| metric | source | fouling range | ncg_dalton range | gap | separable | ncg_blanketed range | gap | separable |
+| --- | --- | ---: | ---: | ---: | --- | ---: | ---: | --- |
+| discharge_pressure_delta_kpa | current sensors | 71.010–96.042 | 71.332–91.269 | -20.259 | no | 71.296–92.912 | -21.902 | no |
+| compressor_power_pct | current sensors | 8.547–17.195 | 8.126–16.223 | -7.677 | no | 8.322–16.559 | -8.012 | no |
+| cop_pct | current sensors | -10.741–-8.144 | -11.266–-9.166 | -1.575 | no | -11.142–-8.879 | -1.862 | no |
+| ua_cond_est_pct | current sensors | -44.066–-43.494 | -46.543–-44.345 | 0.279 | yes | -46.130–-44.494 | 0.428 | yes |
+| condenser_approach_delta_c | current sensors | 2.985–3.302 | 3.103–3.217 | -0.199 | no | 3.078–3.251 | -0.225 | no |
+| cw_range_delta_c | current sensors | -0.007–0.241 | -0.008–0.235 | -0.242 | no | -0.008–0.237 | -0.244 | no |
+| approach_load_slope_change_k_per_100kw | current sensors | 0.348–0.380 | -0.142–-0.103 | 0.452 | yes | 0.027–0.062 | 0.287 | yes |
+| apparent_subcooling_delta_c | added liquid-temperature sensor | -0.158–0.180 | 2.932–3.255 | 2.751 | yes | 1.857–2.184 | 1.677 | yes |
+
+Claimed separators (disjoint from fouling for every NCG variant): ua_cond_est_pct, approach_load_slope_change_k_per_100kw, apparent_subcooling_delta_c.
+Overlapping or not robust: discharge_pressure_delta_kpa, compressor_power_pct, cop_pct, condenser_approach_delta_c, cw_range_delta_c.
+
+Seed-42 `diagnose()` mechanisms:
+- condenser_fouling: condenser heat-transfer degradation (waterside fouling/scaling)
+- ncg_dalton: condenser heat-transfer degradation (waterside fouling/scaling)
+- ncg_blanketed: condenser heat-transfer degradation (waterside fouling/scaling)
+
+<!-- END GENERATED: fault-separation -->
+
+**Result to notice:** contrary to the pre-coding expectation, the sensor-derived
+UA percentage change and the approach-versus-load slope are disjoint from both
+NCG variants over the tested seeds. Discharge-pressure, power, COP, approach,
+and CW-range changes overlap; apparent subcooling separates both NCG variants.
+The generated ranges above determine these claims.
+
+![Seed-42 fault comparison](reports/fault_comparison_timeseries.png)
+
+![Per-seed fault separation ranges](reports/fault_separation_ranges.png)
+
+![Condenser approach versus heat load](reports/fault_load_signature.png)
+
+### Remaining ambiguity
+
+- A mostly-blanketing NCG case with partial pressure approaching zero is, by
+  construction, the fouling equations; this model provides no signal that
+  separates those identical equations.
+- Mixed fouling and NCG are not modeled as a separate case.
+- Real subcooling can change with refrigerant charge, liquid level, or fouling
+  of the subcooler region; this model holds subcooling independent of fouling
+  and NCG.
+- Liquid-sensor placement and bias can change apparent subcooling.
+- The approach-versus-load slope metric assumes NCG partial pressure is
+  independent of load.
+- Separability uses the observed interval gap over 20 seeds and the rule
+  `gap > 0`; this is not a statistical guarantee.
+- The accelerated four-day fault ramp still applies.

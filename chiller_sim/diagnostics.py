@@ -14,6 +14,7 @@ LABEL_COLUMNS = (
     "fault_severity",
     "condenser_ua_kw_per_k",
     "fault_active",
+    "ncg_partial_pressure_kpa",
 )
 
 COMPARISON_SIGNALS = (
@@ -80,6 +81,10 @@ def derive_signals(
     sensors["lift_c"] = cond_sat - evap_sat
     sensors["condenser_heat_kw"] = condenser_heat
     sensors["ua_cond_est_kw_per_k"] = condenser_heat / lmtd
+    if "cond_liquid_temp_c" in sensors:
+        sensors["apparent_subcooling_c"] = (
+            cond_sat - sensors["cond_liquid_temp_c"]
+        )
     return sensors
 
 
@@ -94,6 +99,7 @@ def compare_periods(
     df: pd.DataFrame,
     config: SimulationConfig = SimulationConfig(),
     degraded_hours: int = 24,
+    signals: tuple[str, ...] = COMPARISON_SIGNALS,
 ) -> pd.DataFrame:
     sensors = df.drop(columns=list(LABEL_COLUMNS), errors="ignore").copy()
     derived = derive_signals(sensors, config)
@@ -102,7 +108,7 @@ def compare_periods(
     degraded = timestamps >= timestamps.max() - pd.Timedelta(hours=degraded_hours)
 
     rows = []
-    for signal in COMPARISON_SIGNALS:
+    for signal in signals:
         healthy_hourly = _hourly_profile(derived, signal, healthy)
         degraded_hourly = _hourly_profile(derived, signal, degraded)
         matched = pd.concat(
