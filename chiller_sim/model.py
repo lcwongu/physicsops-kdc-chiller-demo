@@ -55,6 +55,18 @@ class SimulationConfig:
     pressure_noise_sd_kpa: float = 2.0
 
 
+@dataclass(frozen=True)
+class OperatingPoint:
+    evaporator_temp_c: np.ndarray
+    condenser_temp_c: np.ndarray
+    compressor_power_kw: np.ndarray
+    chw_return_c: np.ndarray
+    cw_return_c: np.ndarray
+    suction_pressure_kpa: np.ndarray
+    discharge_pressure_kpa: np.ndarray
+    ncg_partial_pressure_kpa: np.ndarray
+
+
 REQUIRED_COLUMNS = (
     "timestamp",
     "outdoor_wet_bulb_c",
@@ -83,6 +95,120 @@ def saturation_pressure_kpa(t_c: float | np.ndarray) -> float | np.ndarray:
 
 def saturation_temperature_c(p_kpa: float | np.ndarray) -> float | np.ndarray:
     return R134A_B / (R134A_A - np.log(p_kpa)) - 273.15
+
+
+def solve_operating_point(
+    cooling_load_kw: float | np.ndarray,
+    cw_supply_c: float | np.ndarray,
+    condenser_ua_kw_per_k: float | np.ndarray,
+    config: SimulationConfig,
+    use_total_pressure: bool = False,
+    ncg_partial_pressure_kpa: float | np.ndarray = 0.0,
+    ncg_pressure_exponent: float = 0.0,
+    ncg_reference_pressure_kpa: float | None = None,
+) -> OperatingPoint:
+    if ncg_pressure_exponent != 0.0 and ncg_reference_pressure_kpa is None:
+        raise ValueError(
+            "ncg_reference_pressure_kpa is required for nonzero pressure exponent"
+        )
+
+    cooling_load, cw_supply, condenser_ua = np.broadcast_arrays(
+        np.asarray(cooling_load_kw, dtype=float),
+        np.asarray(cw_supply_c, dtype=float),
+        np.asarray(condenser_ua_kw_per_k, dtype=float),
+    )
+    base_ncg_pressure = np.broadcast_to(
+        np.asarray(ncg_partial_pressure_kpa, dtype=float), cooling_load.shape
+    )
+
+    chw_capacity_rate = config.chw_flow_kg_s * config.cp_kj_per_kg_k
+    cw_capacity_rate = config.cw_flow_kg_s * config.cp_kj_per_kg_k
+    evaporator_effectiveness = 1.0 - np.exp(
+        -config.ua_evap_kw_per_k / chw_capacity_rate
+    )
+    chw_return = (
+        config.chw_supply_setpoint_c + cooling_load / chw_capacity_rate
+    )
+    evaporator_temp = (
+        chw_return
+        - cooling_load / (evaporator_effectiveness * chw_capacity_rate)
+    )
+    condenser_effectiveness = 1.0 - np.exp(
+        -condenser_ua / cw_capacity_rate
+    )
+    plr = cooling_load / config.rated_capacity_kw
+    compressor_efficiency = config.compressor_carnot_fraction * (
+        1.0
+        - config.compressor_plr_curvature
+        * (plr - config.compressor_plr_optimum) ** 2
+    )
+
+    compressor_power = cooling_load / 5.0
+    converged = False
+    for _ in range(50):
+        condenser_load = cooling_load + compressor_power
+        condenser_temp = (
+            cw_supply
+            + condenser_load / (condenser_effectiveness * cw_capacity_rate)
+        )
+        if use_total_pressure:
+            reference_pressure = saturation_pressure_kpa(condenser_temp)
+            if ncg_pressure_exponent == 0.0:
+                ncg_partial_pressure = base_ncg_pressure
+            else:
+                ncg_partial_pressure = base_ncg_pressure * (
+                    reference_pressure / ncg_reference_pressure_kpa
+                ) ** ncg_pressure_exponent
+            total_pressure = reference_pressure + ncg_partial_pressure
+            lift_temp = saturation_temperature_c(total_pressure)
+            temperature_lift = lift_temp - evaporator_temp
+        else:
+            ncg_partial_pressure = np.zeros_like(cooling_load)
+            temperature_lift = condenser_temp - evaporator_temp
+        cop_true = (
+            compressor_efficiency
+            * (evaporator_temp + 273.15)
+            / temperature_lift
+        )
+        updated_power = cooling_load / cop_true
+        if np.max(np.abs(updated_power - compressor_power)) < 1e-9:
+            compressor_power = updated_power
+            converged = True
+            break
+        compressor_power = updated_power
+    if not converged:
+        raise RuntimeError("compressor/condenser fixed-point iteration did not converge")
+
+    condenser_load = cooling_load + compressor_power
+    condenser_temp = (
+        cw_supply
+        + condenser_load / (condenser_effectiveness * cw_capacity_rate)
+    )
+    cw_return = cw_supply + condenser_load / cw_capacity_rate
+    suction_pressure = saturation_pressure_kpa(evaporator_temp)
+    reference_pressure = saturation_pressure_kpa(condenser_temp)
+    if use_total_pressure:
+        if ncg_pressure_exponent == 0.0:
+            ncg_partial_pressure = base_ncg_pressure
+        else:
+            ncg_partial_pressure = base_ncg_pressure * (
+                reference_pressure / ncg_reference_pressure_kpa
+            ) ** ncg_pressure_exponent
+        discharge_pressure = reference_pressure + ncg_partial_pressure
+    else:
+        ncg_partial_pressure = np.zeros_like(cooling_load)
+        discharge_pressure = reference_pressure
+
+    return OperatingPoint(
+        evaporator_temp_c=np.asarray(evaporator_temp, dtype=float),
+        condenser_temp_c=np.asarray(condenser_temp, dtype=float),
+        compressor_power_kw=np.asarray(compressor_power, dtype=float),
+        chw_return_c=np.asarray(chw_return, dtype=float),
+        cw_return_c=np.asarray(cw_return, dtype=float),
+        suction_pressure_kpa=np.asarray(suction_pressure, dtype=float),
+        discharge_pressure_kpa=np.asarray(discharge_pressure, dtype=float),
+        ncg_partial_pressure_kpa=np.asarray(ncg_partial_pressure, dtype=float),
+    )
 
 
 def _ar1(
@@ -187,77 +313,23 @@ def generate_telemetry(
             1.0 - config.ncg_blanketing_ua_loss * fault
         )
 
-    chw_capacity_rate = config.chw_flow_kg_s * config.cp_kj_per_kg_k
-    cw_capacity_rate = config.cw_flow_kg_s * config.cp_kj_per_kg_k
-    evaporator_effectiveness = 1.0 - np.exp(
-        -config.ua_evap_kw_per_k / chw_capacity_rate
-    )
-    chw_return_true = (
-        config.chw_supply_setpoint_c
-        + cooling_load_true / chw_capacity_rate
-    )
-    evaporator_temp = (
-        chw_return_true
-        - cooling_load_true
-        / (evaporator_effectiveness * chw_capacity_rate)
-    )
     cw_supply_true = wet_bulb + config.tower_approach_c
-    condenser_effectiveness = 1.0 - np.exp(
-        -condenser_ua / cw_capacity_rate
+    operating_point = solve_operating_point(
+        cooling_load_true,
+        cw_supply_true,
+        condenser_ua,
+        config,
+        use_total_pressure=config.fault_type == "non_condensables",
+        ncg_partial_pressure_kpa=ncg_partial_pressure,
     )
-    compressor_efficiency = config.compressor_carnot_fraction * (
-        1.0
-        - config.compressor_plr_curvature
-        * (plr - config.compressor_plr_optimum) ** 2
-    )
-
-    compressor_power = cooling_load_true / 5.0
-    converged = False
-    for _ in range(50):
-        condenser_load = cooling_load_true + compressor_power
-        condenser_temp = (
-            cw_supply_true
-            + condenser_load / (condenser_effectiveness * cw_capacity_rate)
-        )
-        if config.fault_type == "non_condensables":
-            total_pressure = (
-                saturation_pressure_kpa(condenser_temp)
-                + ncg_partial_pressure
-            )
-            lift_temp = saturation_temperature_c(total_pressure)
-            cop_true = (
-                compressor_efficiency
-                * (evaporator_temp + 273.15)
-                / (lift_temp - evaporator_temp)
-            )
-        else:
-            cop_true = (
-                compressor_efficiency
-                * (evaporator_temp + 273.15)
-                / (condenser_temp - evaporator_temp)
-            )
-        updated_power = cooling_load_true / cop_true
-        if np.max(np.abs(updated_power - compressor_power)) < 1e-9:
-            compressor_power = updated_power
-            converged = True
-            break
-        compressor_power = updated_power
-    if not converged:
-        raise RuntimeError("compressor/condenser fixed-point iteration did not converge")
-
-    condenser_load = cooling_load_true + compressor_power
-    condenser_temp = (
-        cw_supply_true
-        + condenser_load / (condenser_effectiveness * cw_capacity_rate)
-    )
-    cw_return_true = cw_supply_true + condenser_load / cw_capacity_rate
-    suction_pressure_true = saturation_pressure_kpa(evaporator_temp)
-    if config.fault_type == "non_condensables":
-        discharge_pressure_true = (
-            saturation_pressure_kpa(condenser_temp) + ncg_partial_pressure
-        )
-    else:
-        discharge_pressure_true = saturation_pressure_kpa(condenser_temp)
+    evaporator_temp = operating_point.evaporator_temp_c
+    condenser_temp = operating_point.condenser_temp_c
+    compressor_power = operating_point.compressor_power_kw
+    chw_return_true = operating_point.chw_return_c
+    cw_return_true = operating_point.cw_return_c
+    suction_pressure_true = operating_point.suction_pressure_kpa
+    discharge_pressure_true = operating_point.discharge_pressure_kpa
+    ncg_partial_pressure = operating_point.ncg_partial_pressure_kpa
 
     # Sensor noise draws: wet bulb, four water temperatures, two flows,
     # compressor power, then suction and discharge pressures.

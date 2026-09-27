@@ -41,6 +41,30 @@ def test_reproducibility_and_committed_csv(
     )
 
 
+@pytest.mark.parametrize(
+    ("fault_type", "csv_name"),
+    (
+        ("condenser_fouling", "chiller_telemetry.csv"),
+        ("non_condensables", "chiller_telemetry_ncg.csv"),
+    ),
+)
+def test_committed_csvs_are_string_identical(
+    fault_type: str,
+    csv_name: str,
+    default_df: pd.DataFrame,
+    tmp_path: Path,
+) -> None:
+    frame = (
+        default_df
+        if fault_type == "condenser_fouling"
+        else generate_telemetry(SimulationConfig(fault_type=fault_type))
+    )
+    generated_path = tmp_path / csv_name
+    save_telemetry(frame, generated_path)
+    committed_path = Path(__file__).resolve().parents[1] / "data" / csv_name
+    assert generated_path.read_bytes() == committed_path.read_bytes()
+
+
 def test_required_columns_and_no_missing_values(default_df: pd.DataFrame) -> None:
     assert list(default_df.columns) == list(REQUIRED_COLUMNS)
     assert not default_df.isna().any().any()

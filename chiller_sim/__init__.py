@@ -4,6 +4,7 @@ from chiller_sim.model import (
     NCG_PARTIAL_PRESSURE_P_B_KPA,
     NCG_PARTIAL_PRESSURE_P_C_KPA,
     NCG_PARTIAL_PRESSURE_P_D_KPA,
+    OperatingPoint,
     R134A_A,
     R134A_B,
     SimulationConfig,
@@ -13,6 +14,7 @@ from chiller_sim.model import (
     save_telemetry,
     saturation_pressure_kpa,
     saturation_temperature_c,
+    solve_operating_point,
 )
 
 __all__ = [
@@ -21,6 +23,7 @@ __all__ = [
     "NCG_PARTIAL_PRESSURE_P_B_KPA",
     "NCG_PARTIAL_PRESSURE_P_C_KPA",
     "NCG_PARTIAL_PRESSURE_P_D_KPA",
+    "OperatingPoint",
     "R134A_A",
     "R134A_B",
     "SimulationConfig",
@@ -30,4 +33,5 @@ __all__ = [
     "save_telemetry",
     "saturation_pressure_kpa",
     "saturation_temperature_c",
+    "solve_operating_point",
 ]
