@@ -930,6 +930,9 @@ def collapse_kind(
     sweep: str,
     case: str,
 ) -> str:
+    if case == "ncg_blanketing_only":
+        return "identical to fouling by construction"
+
     band = collapse_bands(separation).get((signature, sweep, case), ())
     if not band:
         return "none"

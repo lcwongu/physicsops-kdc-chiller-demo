@@ -311,6 +311,30 @@ def test_expected_subcooling_stays_positive_for_nonzero_ncg(
     assert blanketing_only["ncg_partial_pressure_kpa"].eq(0.0).all()
 
 
+def test_blanketing_only_collapse_kind_is_identical_by_construction(
+    sweep_results,
+) -> None:
+    rows = sweep_results.separation.loc[
+        sweep_results.separation["case"] == "ncg_blanketing_only",
+        ["signature", "sweep"],
+    ].drop_duplicates()
+    assert set(rows["signature"]) == {
+        LOAD_ELASTICITY,
+        CW_SENSITIVITY,
+        SUBCOOLING_EXCESS,
+    }
+    for row in rows.itertuples(index=False):
+        assert (
+            collapse_kind(
+                sweep_results.separation,
+                row.signature,
+                row.sweep,
+                "ncg_blanketing_only",
+            )
+            == "identical to fouling by construction"
+        )
+
+
 def test_nonpositive_approach_excess_produces_nan_elasticity() -> None:
     points = pd.DataFrame(
         {

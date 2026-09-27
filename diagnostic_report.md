@@ -355,16 +355,16 @@ all fault cases within each seed and sweep.
 | signature | sweep | case | separable at n=0 | collapse band n | collapse kind |
 | --- | --- | --- |:---:| --- | --- |
 | apparent_subcooling_excess_c | cw | ncg_blanketed | yes | 9.0, 9.5, 10.0 | finite-sample overlap only |
-| apparent_subcooling_excess_c | cw | ncg_blanketing_only | no | 0.0 | expected-value crossing |
+| apparent_subcooling_excess_c | cw | ncg_blanketing_only | no | 0.0 | identical to fouling by construction |
 | apparent_subcooling_excess_c | cw | ncg_dalton | yes | none | none |
 | apparent_subcooling_excess_c | load | ncg_blanketed | yes | none | none |
-| apparent_subcooling_excess_c | load | ncg_blanketing_only | no | 0.0 | expected-value crossing |
+| apparent_subcooling_excess_c | load | ncg_blanketing_only | no | 0.0 | identical to fouling by construction |
 | apparent_subcooling_excess_c | load | ncg_dalton | yes | none | none |
 | approach_cw_sensitivity_pct_per_k | cw | ncg_blanketed | yes | 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0 | expected-value crossing |
-| approach_cw_sensitivity_pct_per_k | cw | ncg_blanketing_only | no | 0.0 | finite-sample overlap only |
+| approach_cw_sensitivity_pct_per_k | cw | ncg_blanketing_only | no | 0.0 | identical to fouling by construction |
 | approach_cw_sensitivity_pct_per_k | cw | ncg_dalton | yes | 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0 | expected-value crossing |
 | approach_load_elasticity | load | ncg_blanketed | yes | 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0 | expected-value crossing |
-| approach_load_elasticity | load | ncg_blanketing_only | no | 0.0 | expected-value crossing |
+| approach_load_elasticity | load | ncg_blanketing_only | no | 0.0 | identical to fouling by construction |
 | approach_load_elasticity | load | ncg_dalton | yes | 7.5, 8.0, 8.5, 9.0, 9.5, 10.0 | expected-value crossing |
 
 Load-elasticity NaN rows (nonpositive approach excess): 0.
