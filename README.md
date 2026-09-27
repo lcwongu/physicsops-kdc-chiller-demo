@@ -113,6 +113,10 @@ healthy operation to a 50% loss at the final sample (`fault_severity = 0.5`,
 `condenser_ua_kw_per_k = 100`). Severity is zero before the fault start;
 `fault_active` switches to `1` at and after that time.
 
+Real condenser fouling usually builds over weeks to months. This demo
+compresses the ramp into four days so the fault is visible in a one-week
+dataset.
+
 `fault_severity`, `condenser_ua_kw_per_k`, and `fault_active` are ground-truth
 simulation labels, not sensor measurements.
 
