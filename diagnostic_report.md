@@ -545,6 +545,9 @@ points are missed.
 | ncg_blanketing_only | calibration | 20 | 0 | 0 | 0 |
 | ncg_blanketing_only | held-out | 20 | 0 | 0 | 0 |
 
+Calibration-seed zeros for healthy and condenser_fouling are implied by the gate θ > calibration maximum (θ = 0.599 K, max = 0.520 K); they are not an independent check.
+Independent false-alarm checks: held-out seeds 20–39 (healthy, condenser_fouling, ncg_blanketing_only) and ncg_blanketing_only on calibration seeds 0–19, which was not in the calibration population: 0 alarmed evaluations, 0 alarmed days, 0 alarmed windows.
+
 #### Time-series NCG detection delay
 
 | NCG case | detected | median delay (h) | max delay (h) | pre-fault alarms | status |
@@ -554,13 +557,39 @@ points are missed.
 | ncg_dalton_ua_matched | 40/40 | 30.00 | 39.00 | 0 | PASS |
 | ncg_blanketed_ua_matched | 40/40 | 41.00 | 61.00 | 0 | PASS |
 
-#### Missed sweep points
+#### Missed: expected signal under θ
 
-- ncg_blanketed, cw: n=7.0–7.5: 22 °C; n=8.0–9.0: 22 °C, 23 °C; n=9.5–10.0: 22 °C, 23 °C, 24 °C.
-- ncg_blanketed, load: n=9.5–10.0: 300 kW.
-- ncg_dalton, cw: n=9.0–9.5: 22 °C; n=10.0: 22 °C, 23 °C.
+| case | sweep | n | point value | expected excess (K) | detection rate | p_ncg (kPa) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| ncg_blanketed | cw | 9.0 | 22 °C | 0.594 | 45.0% | 13.028 |
+| ncg_blanketed | cw | 9.5 | 22 °C | 0.542 | 37.5% | 11.895 |
+| ncg_blanketed | cw | 10.0 | 22 °C | 0.496 | 17.5% | 10.860 |
 
 Known corner (ncg_blanketed, 22 °C CW inlet, n ≥ 9): missed — detection rate n=9.0: 45%, n=9.5: 38%, n=10.0: 18%, expected excess 0.496–0.594 K vs θ 0.599 K.
+
+#### Partial detections: expected signal above θ (finite-sample failures of the 40/40 rule)
+
+20 missed rows: 3 with expected excess under θ (the known corner), 17 partial detections with expected excess above θ; missed rows with detection rate 0: 0.
+
+| case | sweep | n | point value | expected excess (K) | detection rate |
+| --- | --- | ---: | ---: | ---: | ---: |
+| ncg_blanketed | cw | 7.0 | 22 °C | 0.852 | 97.5% |
+| ncg_blanketed | cw | 7.5 | 22 °C | 0.778 | 97.5% |
+| ncg_blanketed | cw | 8.0 | 22 °C | 0.711 | 87.5% |
+| ncg_blanketed | cw | 8.0 | 23 °C | 0.885 | 97.5% |
+| ncg_blanketed | cw | 8.5 | 22 °C | 0.650 | 70.0% |
+| ncg_blanketed | cw | 8.5 | 23 °C | 0.821 | 92.5% |
+| ncg_blanketed | cw | 9.0 | 23 °C | 0.761 | 85.0% |
+| ncg_blanketed | cw | 9.5 | 23 °C | 0.706 | 80.0% |
+| ncg_blanketed | cw | 9.5 | 24 °C | 0.918 | 95.0% |
+| ncg_blanketed | cw | 10.0 | 23 °C | 0.655 | 55.0% |
+| ncg_blanketed | cw | 10.0 | 24 °C | 0.865 | 97.5% |
+| ncg_blanketed | load | 9.5 | 300 kW | 0.951 | 92.5% |
+| ncg_blanketed | load | 10.0 | 300 kW | 0.898 | 95.0% |
+| ncg_dalton | cw | 9.0 | 22 °C | 0.886 | 97.5% |
+| ncg_dalton | cw | 9.5 | 22 °C | 0.809 | 97.5% |
+| ncg_dalton | cw | 10.0 | 22 °C | 0.739 | 90.0% |
+| ncg_dalton | cw | 10.0 | 23 °C | 0.977 | 97.5% |
 
 #### Pass/fail
 
@@ -592,16 +621,28 @@ calibration-maximum gate; the revised θ = 0.5988 K is also within that range.
 Detection is 40/40 for each nonzero-NCG case with no pre-fault alarms. Median
 delays are 29 hours for Dalton and 38 hours for blanketed NCG, compared with
 the predictions of about 24 and 31 hours; the UA-matched medians are 30 and 41
-hours. The generated missed-point list and corner line give the observed
-low-CW/high-n sweep misses.
+hours. The known corner is the only place where the expected signal is under
+θ. The other 17 missed points are partial detections: their expected excess
+is above θ, and they fail the 40/40 rule only because of finite-sample noise.
+Examples include `ncg_blanketed` at 22 °C, n=7 (0.85 K, 97.5%); at 300 kW,
+n=9.5 and 10 (0.95 and 0.90 K, 92.5% and 95%); and `ncg_dalton` at 22 °C,
+n=9–10 (0.89–0.74 K, 97.5–90%). The lowest-rate partials are blanketed NCG
+at 23 °C, n=10 (55%), and 22 °C, n=8.5 (70%). The prediction that the known
+corner and nearby low-CW/high-n points are missed held for the corner. The
+nearby points are partial detections, not points where the expected signal is
+under θ.
 
 ### Limits
 
 The exponent n cannot be measured with the current sensors, so the detector
-cannot know when it is in a collapse or miss region; no alarm there is not
-evidence of no NCG. The detector uses apparent subcooling only, plus PLR for
-baseline correction; it uses no PR 3-withdrawn approach-vs-load or CW-inlet
-sensitivity signature and no UA estimate. Blanketing-only NCG cannot be
-detected by construction. The baseline slope b is estimated from 48 hours of
-diurnal PLR and extrapolated at steady-state PLR extremes; this widens the
-sweep population's statistic spread and raises θ.
+cannot know when it is in the known-corner region (blanketed NCG at 22 °C CW
+inlet with n ≥ 9, where the expected excess is under θ); no alarm there is not
+evidence of no NCG. For partial-detection points, a single 24-hour window
+alarms in 55–97.5% of seeds, so one quiet window is not conclusive there
+either; this reflects finite-sample variation, not expected signal below θ.
+The detector uses apparent subcooling only, plus PLR for baseline correction;
+it uses no PR 3-withdrawn approach-vs-load or CW-inlet sensitivity signature
+and no UA estimate. Blanketing-only NCG cannot be detected by construction.
+The baseline slope b is estimated from 48 hours of diurnal PLR and
+extrapolated at steady-state PLR extremes; this widens the sweep population's
+statistic spread and raises θ.

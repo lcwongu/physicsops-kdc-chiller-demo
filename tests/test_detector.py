@@ -1,3 +1,4 @@
+from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 
@@ -149,10 +150,60 @@ def test_known_corner_is_missed_and_reported_as_missed(detector_results) -> None
         detector_results.sweep_detection,
         detector_results.threshold["theta_k"],
     )
-    assert corner_line.startswith(
-        "Known corner (ncg_blanketed, 22 °C CW inlet, n ≥ 9): missed —"
+    assert corner_line == (
+        "Known corner (ncg_blanketed, 22 °C CW inlet, n ≥ 9): missed — "
+        "detection rate n=9.0: 45%, n=9.5: 38%, n=10.0: 18%, expected "
+        "excess 0.496–0.594 K vs θ 0.599 K."
     )
     assert corner_line in detector_markdown(detector_results)
+
+
+def test_committed_sweep_misses_are_split_by_expected_signal() -> None:
+    root = Path(__file__).resolve().parents[1]
+    sweep = pd.read_csv(root / "reports/ncg_detector_sweep.csv")
+    missed = sweep.loc[sweep["status"].eq("missed")]
+    under = missed.loc[
+        missed["expected_excess_k"] < missed["threshold_k"]
+    ]
+    under_keys = {
+        (row.case, row.sweep, row.point_value, row.n)
+        for row in under.itertuples(index=False)
+    }
+    assert under_keys == {
+        ("ncg_blanketed", "cw", 22.0, 9.0),
+        ("ncg_blanketed", "cw", 22.0, 9.5),
+        ("ncg_blanketed", "cw", 22.0, 10.0),
+    }
+
+    partial = missed.drop(index=under.index)
+    assert len(partial) == 17
+    assert (partial["expected_excess_k"] > partial["threshold_k"]).all()
+    assert (partial["detection_rate"] > 0.0).all()
+    assert not missed["detection_rate"].eq(0.0).any()
+    assert not missed["expected_excess_k"].eq(missed["threshold_k"]).any()
+    assert sweep.loc[
+        sweep["expected_excess_k"] < sweep["threshold_k"], "status"
+    ].eq("missed").all()
+
+
+def test_missed_sweep_report_fails_on_ambiguous_classification(
+    detector_results,
+) -> None:
+    sweep = detector_results.sweep_detection.copy()
+    missed_idx = sweep.index[sweep["status"].eq("missed")][0]
+    sweep.loc[missed_idx, "expected_excess_k"] = sweep.loc[
+        missed_idx, "threshold_k"
+    ]
+    with pytest.raises(ValueError, match="cannot be classified"):
+        detector_markdown(replace(detector_results, sweep_detection=sweep))
+
+    sweep = detector_results.sweep_detection.copy()
+    detected_idx = sweep.index[sweep["status"].eq("detected")][0]
+    sweep.loc[detected_idx, "expected_excess_k"] = (
+        sweep.loc[detected_idx, "threshold_k"] - 0.1
+    )
+    with pytest.raises(ValueError, match="cannot be classified"):
+        detector_markdown(replace(detector_results, sweep_detection=sweep))
 
 
 def test_detector_csv_report_block_and_plot_match_recompute(
@@ -165,6 +216,9 @@ def test_detector_csv_report_block_and_plot_match_recompute(
         "### Threshold rule failure and revision",
         "### Prediction vs outcome",
         "### Limits",
+        "#### Missed: expected signal under θ",
+        "#### Partial detections: expected signal above θ "
+        "(finite-sample failures of the 40/40 rule)",
     ):
         assert heading in report
 
@@ -172,6 +226,31 @@ def test_detector_csv_report_block_and_plot_match_recompute(
         END_MARKER, maxsplit=1
     )[0].strip()
     assert generated == detector_markdown(detector_results)
+    assert (
+        "Calibration-seed zeros for healthy and condenser_fouling are implied "
+        "by the gate θ > calibration maximum (θ = 0.599 K, max = 0.520 K); "
+        "they are not an independent check."
+    ) in generated
+    assert (
+        "Independent false-alarm checks: held-out seeds 20–39 "
+        "(healthy, condenser_fouling, ncg_blanketing_only) and "
+        "ncg_blanketing_only on calibration seeds 0–19, which was not "
+        "in the calibration population: 0 alarmed evaluations, 0 alarmed "
+        "days, 0 alarmed windows."
+    ) in generated
+    partial = generated.split(
+        "#### Partial detections: expected signal above θ "
+        "(finite-sample failures of the 40/40 rule)",
+        maxsplit=1,
+    )[1].split("#### Pass/fail", maxsplit=1)[0]
+    table_rows = [
+        line
+        for line in partial.splitlines()
+        if line.startswith("|")
+        and not line.startswith("| case |")
+        and not line.startswith("| ---")
+    ]
+    assert len(table_rows) == 17
 
     timeseries_buffer = StringIO()
     detector_results.timeseries_summary.loc[

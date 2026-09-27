@@ -665,54 +665,6 @@ def _summarize_runs(
     )
 
 
-def _missed_point_lines(sweep_detection: pd.DataFrame) -> list[str]:
-    missed = sweep_detection.loc[sweep_detection["status"] == "missed"]
-    if missed.empty:
-        return ["- none."]
-    lines = []
-    for (case, sweep_name), group in missed.groupby(
-        ["case", "sweep"], sort=True
-    ):
-        n_to_points = {}
-        for exponent, exponent_rows in group.groupby("n", sort=True):
-            values = sorted(exponent_rows["point_value"].unique())
-            n_to_points[float(exponent)] = tuple(values)
-        exponent_values = sorted(n_to_points)
-        grouped = []
-        start = previous = exponent_values[0]
-        point_values = n_to_points[start]
-        for exponent in exponent_values[1:]:
-            if (
-                not np.isclose(exponent - previous, 0.5)
-                or n_to_points[exponent] != point_values
-            ):
-                grouped.append((start, previous, point_values))
-                start = exponent
-                point_values = n_to_points[exponent]
-            previous = exponent
-        grouped.append((start, previous, point_values))
-        descriptions = []
-        for first, last, points in grouped:
-            n_text = (
-                f"n={first:.1f}"
-                if first == last
-                else f"n={first:.1f}–{last:.1f}"
-            )
-            point_text = ", ".join(
-                (
-                    f"{point:.0f} °C"
-                    if sweep_name == "cw"
-                    else f"{point:.0f} kW"
-                )
-                for point in points
-            )
-            descriptions.append(f"{n_text}: {point_text}")
-        lines.append(
-            f"- {case}, {sweep_name}: " + "; ".join(descriptions) + "."
-        )
-    return lines
-
-
 def _corner_line(sweep_detection: pd.DataFrame, threshold: float) -> str:
     corner = sweep_detection.loc[
         (sweep_detection["case"] == "ncg_blanketed")
@@ -746,6 +698,66 @@ def _corner_line(sweep_detection: pd.DataFrame, threshold: float) -> str:
         f"{status} — detection rate {rate_text}, expected excess "
         f"{expected_text} K vs θ {threshold:.3f} K."
     )
+
+
+def _missed_sweep_sections(
+    sweep_detection: pd.DataFrame,
+) -> tuple[list[str], str, list[str]]:
+    missed = sweep_detection.loc[sweep_detection["status"] == "missed"]
+    under_all = sweep_detection.loc[
+        sweep_detection["expected_excess_k"]
+        < sweep_detection["threshold_k"]
+    ]
+    if (
+        missed["expected_excess_k"].eq(missed["threshold_k"]).any()
+        or under_all["status"].eq("detected").any()
+    ):
+        raise ValueError("sweep misses cannot be classified at this threshold")
+
+    under = missed.loc[
+        missed["expected_excess_k"] < missed["threshold_k"]
+    ].sort_values(["case", "sweep", "n", "point_value"])
+    above = missed.loc[
+        missed["expected_excess_k"] > missed["threshold_k"]
+    ].sort_values(["case", "sweep", "n", "point_value"])
+    if len(under) + len(above) != len(missed):
+        raise ValueError("missed sweep row has no threshold classification")
+
+    under_lines = [
+        "| case | sweep | n | point value | expected excess (K) | "
+        "detection rate | p_ncg (kPa) |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for row in under.itertuples(index=False):
+        point_unit = "°C" if row.sweep == "cw" else "kW"
+        under_lines.append(
+            f"| {row.case} | {row.sweep} | {row.n:.1f} | "
+            f"{row.point_value:g} {point_unit} | "
+            f"{row.expected_excess_k:.3f} | {row.detection_rate:.1%} | "
+            f"{row.ncg_partial_pressure_kpa:.3f} |"
+        )
+
+    above_lines = [
+        "| case | sweep | n | point value | expected excess (K) | "
+        "detection rate |",
+        "| --- | --- | ---: | ---: | ---: | ---: |",
+    ]
+    for row in above.itertuples(index=False):
+        point_unit = "°C" if row.sweep == "cw" else "kW"
+        above_lines.append(
+            f"| {row.case} | {row.sweep} | {row.n:.1f} | "
+            f"{row.point_value:g} {point_unit} | "
+            f"{row.expected_excess_k:.3f} | {row.detection_rate:.1%} |"
+        )
+
+    zero_rate = int(missed["detection_rate"].eq(0.0).sum())
+    count_line = (
+        f"{len(missed)} missed rows: {len(under)} with expected excess "
+        f"under θ (the known corner), {len(above)} partial detections with "
+        f"expected excess above θ; missed rows with detection rate 0: "
+        f"{zero_rate}."
+    )
+    return under_lines, count_line, above_lines
 
 
 def _pass_fail_lines(results: DetectorResults) -> list[str]:
@@ -841,8 +853,22 @@ def detector_markdown(results: DetectorResults) -> str:
             f"{'PASS' if passed else 'FAIL'} |"
         )
 
-    missed_lines = _missed_point_lines(results.sweep_detection)
+    under_lines, missed_count_line, above_lines = _missed_sweep_sections(
+        results.sweep_detection
+    )
     corner = _corner_line(results.sweep_detection, threshold["theta_k"])
+    independent = results.false_alarms.loc[
+        results.false_alarms["seed_group"].eq("held-out")
+        | (
+            results.false_alarms["case"].eq("ncg_blanketing_only")
+            & results.false_alarms["seed_group"].eq("calibration")
+        )
+    ]
+    independent_evaluations = int(
+        independent["time_series_alarmed_evaluations"].sum()
+    )
+    independent_days = int(independent["time_series_alarmed_days"].sum())
+    independent_windows = int(independent["sweep_alarmed_windows"].sum())
     return "\n".join(
         [
             "#### Threshold recovery",
@@ -866,15 +892,35 @@ def detector_markdown(results: DetectorResults) -> str:
             "",
             *false_lines,
             "",
+            "Calibration-seed zeros for healthy and condenser_fouling are "
+            "implied by the gate θ > calibration maximum "
+            f"(θ = {threshold['theta_k']:.3f} K, "
+            f"max = {threshold['calibration_max_k']:.3f} K); they are not "
+            "an independent check.",
+            "Independent false-alarm checks: held-out seeds 20–39 "
+            "(healthy, condenser_fouling, ncg_blanketing_only) and "
+            "ncg_blanketing_only on calibration seeds 0–19, which was not "
+            "in the calibration population: "
+            f"{independent_evaluations} alarmed evaluations, "
+            f"{independent_days} alarmed days, "
+            f"{independent_windows} alarmed windows.",
+            "",
             "#### Time-series NCG detection delay",
             "",
             *delay_lines,
             "",
-            "#### Missed sweep points",
+            "#### Missed: expected signal under θ",
             "",
-            *missed_lines,
+            *under_lines,
             "",
             corner,
+            "",
+            "#### Partial detections: expected signal above θ "
+            "(finite-sample failures of the 40/40 rule)",
+            "",
+            missed_count_line,
+            "",
+            *above_lines,
             "",
             "#### Pass/fail",
             "",
