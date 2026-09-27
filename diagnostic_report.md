@@ -270,6 +270,9 @@ discharge-pressure-matched and UA-estimate-matched cases; the generated claim
 line shows that only approach-versus-load slope and apparent subcooling remain
 claimed separators. UA-estimate percentage change is no longer claimed because
 it overlaps both UA-estimate-matched variants.
+The same calibration-target residual appears in reverse for condenser
+approach: it is disjoint from `ncg_dalton_ua_matched` by only `+0.009 °C`
+while overlapping the other three variants, so it is not claimed either.
 
 ![Seed-42 fault comparison](reports/fault_comparison_timeseries.png)
 
